@@ -1,0 +1,2120 @@
+# cod2-coop\tools\make_mod.ps1
+# Build the probe mod for the TEST COPY only.
+#
+# How the hook works: the engine calls maps/<level>.gsc::main(). We take the original
+# script from the game's own iwd, rename its main() to coop_orig_main(), and prepend a
+# wrapper that starts a monitor thread and then calls the original. Mission logic is
+# therefore untouched and executed exactly as before; our code only observes.
+#
+# Output: <test install>\mods\coop\z_coop.iwd  (zip with maps/moscow.gsc)
+# Launch: CoD2SP_s.exe +set fs_game mods/coop +set logfile 2 +set developer 1 +map moscow
+
+param(
+    [string]$GameDir = "C:\Program Files (x86)\Steam\steamapps\common\Call of Duty 2",
+    [string]$TestDir = "C:\Program Files (x86)\Steam\steamapps\common\Call of Duty 2 - coop-test",
+    [string]$Level = "moscow",
+    [ValidateSet('probe', 'puppet', 'follow', 'char', 'net', 'net2', 'net3', 'net4', 'net5', 'net6', 'net7')]
+    [string]$Probe = 'puppet',
+    [string]$Suffix = '',
+    [switch]$Install,         # installer mode (a player's PC): no python, no dev leftovers; the archive is built into <TestDir>\main from the PLAYER'S OWN game files
+    [switch]$MainMenuOnly,    # hide the CO-OP button in the pause menu (patch_menu.py --mainonly); by default it is shown there too
+    [string[]]$Levels = @()   # extra levels to override with the same mod (all use the net7/net5 body); 'all' = every playable SP level
+)
+
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+Add-Type -AssemblyName System.IO.Compression
+
+function Get-FromIwd([string]$gameDir, [string]$entry) {
+    foreach ($iwd in Get-ChildItem (Join-Path $gameDir 'main') -Filter 'iw_*.iwd') {   # stock archives only: an installed zz_coop archive is never read back
+        $z = [IO.Compression.ZipFile]::OpenRead($iwd.FullName)
+        try {
+            $e = $z.Entries | Where-Object { $_.FullName -eq $entry } | Select-Object -First 1
+            if ($e) {
+                $sr = New-Object IO.StreamReader($e.Open())
+                $t = $sr.ReadToEnd(); $sr.Close()
+                return $t
+            }
+        } finally { $z.Dispose() }
+    }
+    throw "entry not found in any iwd: $entry"
+}
+
+$orig = Get-FromIwd $GameDir "maps/$Level.gsc"
+Write-Host "original $Level.gsc : $($orig.Length) chars"
+
+# Replace only the first 'main()' (the entry point) with a renamed copy.
+$mm = [regex]::Match($orig, '(?m)^main\s*\(\s*\)')
+if (-not $mm.Success) { throw "main() not found in $Level.gsc" }
+$idx = $mm.Index
+$patched = $orig.Remove($idx, $mm.Length).Insert($idx, 'coop_orig_main()')
+Write-Host "renamed entry point at offset $idx"
+
+$probeBody = @"
+
+// ============================================================
+// cod2-coop probe hook (built $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+// Observes only: prints the local player origin/angles/health every 0.5 s to the
+// console log via println. (iprintlnbold is not used: the engine warns about
+// non-localized game message strings and it spams the screen.)
+// ============================================================
+main()
+{
+    thread coop_probe();
+    coop_orig_main();
+}
+
+coop_probe()
+{
+    while (!isdefined(level.player))
+        wait 0.25;
+
+    p = level.player;
+    i = 0;
+    while (i < 240)
+    {
+        org = p.origin;
+        ang = p.angles;
+        line = "COOPPROBE n=" + i + " x=" + org[0] + " y=" + org[1] + " z=" + org[2] + " yaw=" + ang[1] + " hp=" + p.health;
+        iprintln(line);
+        i = i + 1;
+        wait 0.5;
+    }
+    iprintln("COOPPROBE done");
+}
+"@
+
+# v2: the puppet. Everything here uses functions that the game's own scripts already
+# call (checked against the shipped .gsc set on 2026-11-13):
+#   spawn("script_model", org)  - 60 scripts      setModel("xmodel/...") - 87
+#   anglestoforward(angles)     - 120            precacheModel          - 168
+#   hide()                      - 41             delete()               - 69
+# The model is precached in main(), before the original entry point, because the engine
+# only accepts precache during level load.
+$puppetBody = @"
+
+// ============================================================
+// cod2-coop puppet hook (built $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+// Stage 1 of the vertical slice: create a second body in the level, move it, remove it,
+// logging every step. No networking yet - the point is that the engine accepts a
+// script_model standing in for player 2.
+// ============================================================
+main()
+{
+    precacheModel("xmodel/playerbody_russian_padded01");
+    thread coop_puppet();
+    coop_orig_main();
+}
+
+coop_puppet()
+{
+    while (!isdefined(level.player))
+        wait 0.1;
+
+    p = level.player;
+    wait 2.0;
+
+    org = p.origin;
+    ang = p.angles;
+    fwd = anglestoforward(ang);
+    px = org[0] + fwd[0] * 64;
+    py = org[1] + fwd[1] * 64;
+    pz = org[2];
+    iprintln("COOP2 spawn-request x=" + px + " y=" + py + " z=" + pz);
+
+    puppet = spawn("script_model", (px, py, pz));
+    if (!isdefined(puppet))
+    {
+        iprintln("COOP2 ERROR spawn returned undefined");
+        return;
+    }
+    puppet setModel("xmodel/playerbody_russian_padded01");
+    por = puppet.origin;
+    iprintln("COOP2 spawned puppet x=" + por[0] + " y=" + por[1] + " z=" + por[2]);
+
+    i = 0;
+    while (i < 30)
+    {
+        nx = px + i * 8;
+        puppet setOrigin((nx, py, pz));
+        por = puppet.origin;
+        org = p.origin;
+        iprintln("COOP2 move n=" + i + " puppet=" + por[0] + " " + por[1] + " " + por[2] + " player=" + org[0] + " " + org[1] + " " + org[2]);
+        i = i + 1;
+        wait 0.5;
+    }
+
+    puppet hide();
+    iprintln("COOP2 hidden");
+    wait 1.0;
+    puppet delete();
+    iprintln("COOP2 deleted, done");
+}
+"@
+
+# v3: a puppet that follows the player. `setOrigin` is a player-only command in CoD2
+# ("entity N is not a player" - runtime error, session 1), so the position is written as
+# an entity field instead, the way the shipped scripts move script_models around.
+$followBody = @"
+
+// ============================================================
+// cod2-coop puppet v3 (built $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+// Spawns a second soldier beside the player and makes it follow him, logging both
+// origins. Position is written with 'puppet.origin = (...)' because the setOrigin
+// script command is restricted to player entities in this build.
+// ============================================================
+main()
+{
+    precacheModel("xmodel/playerbody_russian_padded01");
+    thread coop_follow();
+    coop_orig_main();
+}
+
+coop_follow()
+{
+    while (!isdefined(level.player))
+        wait 0.1;
+
+    p = level.player;
+    wait 2.0;
+
+    org = p.origin;
+    ang = p.angles;
+    fwd = anglestoforward(ang);
+    rx = fwd[1];
+    ry = 0 - fwd[0];
+    px = org[0] + rx * 40;
+    py = org[1] + ry * 40;
+    pz = org[2];
+
+    puppet = spawn("script_model", (px, py, pz));
+    if (!isdefined(puppet))
+    {
+        iprintln("COOP3 ERROR spawn returned undefined");
+        return;
+    }
+    puppet setModel("xmodel/playerbody_russian_padded01");
+    por = puppet.origin;
+    iprintln("COOP3 spawned puppet=" + por[0] + " " + por[1] + " " + por[2]);
+
+    i = 0;
+    while (i < 300)
+    {
+        org = p.origin;
+        ang = p.angles;
+        fwd = anglestoforward(ang);
+        rx = fwd[1];
+        ry = 0 - fwd[0];
+        nx = org[0] + rx * 40;
+        ny = org[1] + ry * 40;
+        nz = org[2];
+        puppet.origin = (nx, ny, nz);
+        por = puppet.origin;
+        iprintln("COOP3 n=" + i + " puppet=" + por[0] + " " + por[1] + " " + por[2] + " player=" + org[0] + " " + org[1] + " " + org[2]);
+        i = i + 1;
+        wait 0.2;
+    }
+    iprintln("COOP3 loop finished");
+}
+"@
+
+# v5: make the puppet look like a soldier. A bare script_model renders the body mesh in
+# bind pose with no head, because the head is a separate model attached to tag_head and
+# the animation comes from the AI/animation tree. makeFakeAI() is documented by the
+# engine's own error string ("makeFakeAI must be applied to a script_model"), and heads
+# are attached exactly as the shipped character scripts do: attach(model, tag).
+# Each step is logged BEFORE it runs, so the log pinpoints the call that gets rejected.
+$charBody = @"
+
+// ============================================================
+// cod2-coop puppet v8 (built $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+// body + head + makeFakeAI, then follow the player.
+// ============================================================
+main()
+{
+    precacheModel("xmodel/playerbody_russian_padded01");
+    precacheModel("xmodel/head_russian_winter_volsky");
+    thread coop_char();
+    coop_orig_main();
+}
+
+coop_char()
+{
+    while (!isdefined(level.player))
+        wait 0.1;
+
+    p = level.player;
+    wait 2.0;
+
+    org = p.origin;
+    ang = p.angles;
+    fwd = anglestoforward(ang);
+    rx = fwd[1];
+    ry = 0 - fwd[0];
+    px = org[0] - fwd[0] * 96;
+    py = org[1] - fwd[1] * 96;
+    pz = org[2];
+
+    puppet = spawn("script_model", (px, py, pz));
+    if (!isdefined(puppet))
+    {
+        iprintln("COOP8 ERROR spawn returned undefined");
+        return;
+    }
+    iprintln("COOP8 step1 spawned");
+
+    puppet setModel("xmodel/playerbody_russian_padded01");
+    iprintln("COOP8 step2 body model set");
+
+    puppet attach("xmodel/head_russian_winter_volsky", "", true);
+    iprintln("COOP8 step3 head attached");
+
+    puppet makeFakeAI();
+    iprintln("COOP8 step4 makeFakeAI ok");
+
+    i = 0;
+    while (i < 300)
+    {
+        org = p.origin;
+        ang = p.angles;
+        fwd = anglestoforward(ang);
+        rx = fwd[1];
+        ry = 0 - fwd[0];
+        nx = org[0] + rx * 40;
+        ny = org[1] + ry * 40;
+        nz = org[2];
+        puppet.origin = (nx, ny, nz);
+        por = puppet.origin;
+        if (i < 3)
+            iprintln("COOP8 follow n=" + i + " puppet=" + por[0] + " " + por[1] + " " + por[2] + " player=" + org[0] + " " + org[1] + " " + org[2]);
+        i = i + 1;
+        wait 0.2;
+    }
+    iprintln("COOP8 loop finished");
+}
+"@
+
+$netBody = @"
+
+// ============================================================
+// cod2-coop net hook (built $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+// This is the variant that was MISSING from the repo while B1 was open: the build that
+// reads coop_px/py/pz from the bridge. One build separates the two candidate causes of B1
+// and fixes B3 at the same time:
+//   * it creates the cvars the bridge writes into AND logs what getcvarfloat() returns,
+//     so "the script never sees the value" is distinguishable from "the value arrives but
+//     the model does not move";
+//   * it moves the puppet with moveTo() - the engine's own mover, used by 109 shipped
+//     script calls - instead of assigning .origin;
+//   * it takes z from the player, not from the packet, so the puppet stands on the ground.
+// Acceptance: a COOPN line whose "puppet=" part changes over time while "read=" matches
+// what the bridge wrote.
+// ============================================================
+main()
+{
+    precacheModel("xmodel/playerbody_russian_padded01");
+    precacheModel("xmodel/head_russian_winter_volsky");
+    thread coop_net();
+    coop_orig_main();
+}
+
+coop_net()
+{
+    // created here, at level start, so the bridge can resolve them by name text
+    setcvar("coop_px", "0.000000000000000000");
+    setcvar("coop_py", "0.000000000000000000");
+    setcvar("coop_pz", "0.000000000000000000");
+    setcvar("coop_cal", "1.000000000000000000");
+
+    while (!isdefined(level.player))
+        wait 0.1;
+
+    p = level.player;
+    wait 2.0;
+
+    puppet = spawn("script_model", p.origin);
+    if (!isdefined(puppet))
+    {
+        iprintln("COOPN ERROR spawn returned undefined");
+        return;
+    }
+    puppet setModel("xmodel/playerbody_russian_padded01");
+    puppet attach("xmodel/head_russian_winter_volsky", "", true);
+    puppet makeFakeAI();
+    por = puppet.origin;
+    iprintln("COOPN spawn puppet=" + por[0] + " " + por[1] + " " + por[2]);
+
+    i = 0;
+    k = 0;
+    while (i < 1200)
+    {
+        rx = getcvarfloat("coop_px");
+        ry = getcvarfloat("coop_py");
+        rz = getcvarfloat("coop_pz");
+        po = p.origin;
+
+        if (rx != 0 || ry != 0)
+            puppet moveTo((rx, ry, po[2]), 0.2);
+
+        por = puppet.origin;
+
+        k = k + 1;
+        if (k >= 10)
+        {
+            iprintln("COOPN n=" + i + " read=" + rx + " " + ry + " " + rz + " puppet=" + por[0] + " " + por[1] + " " + por[2] + " player=" + po[0] + " " + po[1] + " " + po[2]);
+            k = 0;
+        }
+        i = i + 1;
+        wait 0.2;
+    }
+    iprintln("COOPN loop finished");
+}
+"@
+
+$net2Body = @"
+
+// ============================================================
+// cod2-coop net hook v2 (built $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+// Builds on the working net variant (B1 fixed: moveTo instead of .origin). Adds:
+//   * the engine's own character setup (B2): character\...::main() then makeFakeAI(),
+//     exactly the order the shipped drone_*_spawn() uses. Gives model + head + helmet
+//     and the animation tree, instead of a bare script_model in bind pose;
+//   * ground height (B3): bulletTrace down from above the target to below the player,
+//     so the soldier stands on the terrain instead of inheriting the player's z;
+//   * removal: no new packet for ~30 s and the puppet deletes itself (slice step 3);
+//   * a readback channel: what getcvarfloat() actually returned is written into
+//     coop_rx/coop_ry/coop_rz, which the bridge logs - acceptance without a human eye.
+// ============================================================
+main()
+{
+    character\russian_winter_trench_volskey::precache();
+    thread coop_net2();
+    coop_orig_main();
+}
+
+coop_net2()
+{
+    // Padded on purpose: the bridge sprintf()s a formatted float into these strings in place,
+    // so the allocation must be longer than any value it will hold ("-2047.462" is 9 chars).
+    // "0.000" is too short and corrupts the heap.
+    setcvar("coop_px", "0.000000000000000000000000000000");
+    setcvar("coop_py", "0.000000000000000000000000000000");
+    setcvar("coop_pz", "0.000000000000000000000000000000");
+    setcvar("coop_cal", "1.000000000000000000000000000000");
+    setcvar("coop_rx", "none");
+    setcvar("coop_ry", "none");
+    setcvar("coop_rz", "none");
+    // try to get a real log file; if the engine only opens it at startup this is a no-op
+    setcvar("logfile", "2");
+
+    while (!isdefined(level.player))
+        wait 0.1;
+
+    if (getcvar("mapname") == "libya" || getcvar("mapname") == "88ridge")
+        return;
+    p = level.player;
+    wait 2.0;
+
+    // Wait for the first packet before spawning. The earlier build spawned immediately and then
+    // deleted the soldier after 30 s of silence - which is exactly what happens while the bridge
+    // has not been injected yet, so the puppet vanished before it was ever driven.
+    rx = getcvarfloat("coop_px");
+    ry = getcvarfloat("coop_py");
+    i = 0;
+    while ((rx == 0 && ry == 0) && i < 3000)
+    {
+        rx = getcvarfloat("coop_px");
+        ry = getcvarfloat("coop_py");
+        i = i + 1;
+        wait 0.2;
+    }
+    if (rx == 0 && ry == 0)
+    {
+        iprintln("COOPN2 no packets within 10 minutes, not spawning");
+        return;
+    }
+
+    po = p.origin;
+    tr = bulletTrace((rx, ry, po[2] + 512), (rx, ry, po[2] - 1024), false, undefined);
+    gz = po[2];
+    if (tr["fraction"] < 1)
+        gz = tr["position"][2];
+
+    puppet = spawn("script_model", (rx, ry, gz));
+    if (!isdefined(puppet))
+    {
+        iprintln("COOPN2 ERROR spawn returned undefined");
+        return;
+    }
+    puppet character\russian_winter_trench_volskey::main();
+    puppet makeFakeAI();
+    por = puppet.origin;
+    iprintln("COOPN2 spawn puppet=" + por[0] + " " + por[1] + " " + por[2]);
+    setcvar("coop_rx", "spawned");
+
+    lastx = rx;
+    lasty = ry;
+    still = 0;
+    i = 0;
+    k = 0;
+    while (i < 3000)
+    {
+        rx = getcvarfloat("coop_px");
+        ry = getcvarfloat("coop_py");
+
+        if (rx != lastx || ry != lasty)
+        {
+            po = p.origin;
+            tr = bulletTrace((rx, ry, po[2] + 512), (rx, ry, po[2] - 1024), false, undefined);
+            gz = po[2];
+            if (tr["fraction"] < 1)
+                gz = tr["position"][2];
+
+            puppet moveTo((rx, ry, gz), 0.2);
+            lastx = rx;
+            lasty = ry;
+            still = 0;
+        }
+        else
+        {
+            still = still + 1;
+        }
+
+        // removal is part of the slice, but only once the peer has actually moved it
+        if (still > 150)
+        {
+            setcvar("coop_rx", "removing");
+            puppet hide();
+            wait 0.5;
+            puppet delete();
+            setcvar("coop_rx", "removed");
+            iprintln("COOPN2 removed after 30 s without packets");
+            return;
+        }
+
+        k = k + 1;
+        if (k >= 10)
+        {
+            // string copy, not a float concatenation: setcvar("x", "" + float) stores an empty
+            // string in this engine, which is why the earlier readback channel was always ''
+            setcvar("coop_rx", getcvar("coop_px"));
+            por = puppet.origin;
+            iprintln("COOPN2 n=" + i + " read=" + rx + " " + ry + " puppet=" + por[0] + " " + por[1] + " " + por[2]);
+            k = 0;
+        }
+        i = i + 1;
+        wait 0.2;
+    }
+    iprintln("COOPN2 loop finished");
+}
+"@
+
+# net3 = net2 + idle animation (B2). Recipe copied from the shipped maps\_drones.gsc: bind the
+# "fakeshooters" tree, useAnimTree(#animtree), loop a flagged idle knob. setFlaggedAnimKnob does not
+# touch the origin, so moveTo keeps driving the puppet. Risk: a bad identifier fails the level load.
+$net3Body = $net2Body -replace '(?m)^coop_net2\(\)', "#using_animtree(`"fakeshooters`");`ncoop_net2()"
+$net3Body = $net3Body -replace '(puppet makeFakeAI\(\);)', "`$1`n    puppet useAnimTree(#animtree);`n    puppet thread coop_idle();"
+$net3Body += @"
+
+coop_idle()
+{
+    self endon("death");
+    while (isdefined(self))
+    {
+        self setFlaggedAnimKnob("coop_idle", %stand_alert_1);
+        self waittillmatch("coop_idle", "end");
+    }
+}
+"@
+
+# net4 = net3 with a live pose selector: the GSC polls the cvar coop_anim (type `set coop_anim 3` in
+# the console) and restarts the matching animation, so poses can be compared without rebuilding or
+# restarting the game. Anim identifiers are fixed at compile time, hence the list below.
+#   0-2 stand_alert_1..3   3 stand_aim_straight   4 crouch_aim_straight   5 stand_shoot_auto_straight
+#   6 stand_shoot_straight 7 crouch_shoot_auto_straight   8 reload_stand_rifle
+$net4Body = $net2Body -replace '(?m)^coop_net2\(\)', "#using_animtree(`"coop_puppet`");`ncoop_net2()"
+$net4Body = $net4Body -replace '(puppet makeFakeAI\(\);)', "`$1`n    puppet useAnimTree(#animtree);`n    puppet thread coop_pose();"
+# weapon: the aim poses put the hands on a rifle, but a bare script_model has none. Same call as the
+# shipped drone_allies_assignWeapon (russian campaign: "ppsh" or "SVT40"); precached in main().
+$net4Body = $net4Body -replace '(puppet thread coop_pose\(\);)', "`$1`n    puppet attach(getWeaponModel(`"ppsh`"), `"tag_weapon_right`");"
+$net4Body = $net4Body -replace '(character\\russian_winter_trench_volskey::precache\(\);)', "`$1`n    precacheItem(`"ppsh`");"
+# the in-loop ground trace must ignore the puppet itself, or it hits the puppet's head (the "elevator")
+$net4Body = $net4Body -replace '(?m)^(\s{12}tr = bulletTrace\(.*?), false, undefined\);', '$1, false, puppet);'
+$net4Body = $net4Body -replace '(setcvar\("coop_rz", "none"\);)', "`$1`n    setcvar(`"coop_anim`", `"0000000001`");"   # default pose 1 (calm idle)
+$net4Body += @"
+
+coop_pose()
+{
+    self endon("death");
+    cur = -1;
+    while (isdefined(self))
+    {
+        a = getcvarint("coop_anim");
+        if (a != cur)
+        {
+            cur = a;
+            if (a == 1)      self setFlaggedAnimKnobRestart("coop_pose", %stand_alert_2, 1, 0.2, 1);
+            else if (a == 2) self setFlaggedAnimKnobRestart("coop_pose", %stand_alert_3, 1, 0.2, 1);
+            else if (a == 3) self setFlaggedAnimKnobRestart("coop_pose", %stand_aim_straight, 1, 0.2, 1);
+            else if (a == 4) self setFlaggedAnimKnobRestart("coop_pose", %crouch_aim_straight, 1, 0.2, 1);
+            else if (a == 5) self setFlaggedAnimKnobRestart("coop_pose", %stand_shoot_auto_straight, 1, 0.2, 1);
+            else if (a == 6) self setFlaggedAnimKnobRestart("coop_pose", %stand_shoot_straight, 1, 0.2, 1);
+            else if (a == 7) self setFlaggedAnimKnobRestart("coop_pose", %crouch_shoot_auto_straight, 1, 0.2, 1);
+            else if (a == 8) self setFlaggedAnimKnobRestart("coop_pose", %reload_stand_rifle, 1, 0.2, 1);
+            else             self setFlaggedAnimKnobRestart("coop_pose", %stand_alert_1, 1, 0.2, 1);
+            iprintln("COOPN4 pose " + a);
+        }
+        wait 0.2;
+    }
+}
+"@
+
+# net5 = net4 + the local player's state published for the bridge to send to the peer, and the peer's
+# yaw applied to the puppet. A GSC thread writes coop_lx/ly/lz/lyaw every 0.1 s as "p" + float (a bare
+# float concatenated to "" gives an empty string in this engine; the bridge strips the p). The bridge
+# sends them over UDP to the address in coop_peer.txt; the peer's bridge writes coop_px/py/pz/pyaw.
+# The 30 s "no movement" removal is turned off: a peer standing still must not lose its puppet.
+# (A real disconnect would need a heartbeat; not built yet.)
+$net5Body = $net4Body
+$net5Body = $net5Body -replace '(setcvar\("coop_anim", "0000000001"\);)', "`$1`n    setcvar(`"coop_pyaw`", `"0.000000000000000000000000000000`");"
+$net5Body = $net5Body -replace '(?m)^(\s*)(// removal is part of the slice)', "`$1puppet rotateTo((0, getcvarfloat(`"coop_pyaw`"), 0), 0.2);`n`$1`$2"
+$net5Body = $net5Body -replace 'still > 150', 'still > 99999999'
+$net5Body = $net5Body -replace '(thread coop_net2\(\);)', "`$1`n    thread coop_publish();"
+# not solid: the puppet used to block the real player (a peer standing in a doorway locked the other
+# player in, as the test bot did). setcontents(0) is what the shipped duhoc_assault does for its
+# makeFakeAI actors; players then walk through each other. Side effect: bullets pass through it too.
+$net5Body = $net5Body -replace '(puppet attach\(getWeaponModel\("ppsh"\), "tag_weapon_right"\);)', "`$1`n    puppet setcontents(0);"
+
+# latency: the puppet loop polled every 0.2 s and glided over 0.2 s, the publisher wrote every 0.1 s
+# (about 0.6 s end to end). 0.05 s is one server frame. The main loop was capped at 3000 iterations
+# (10 min at 0.2 s), which would now be 2.5 min, so the cap goes too.
+$net5Body = $net5Body -replace '(?m)(i = i \+ 1;\r?\n\s*)wait 0\.2;', '${1}wait 0.05;'
+$net5Body = $net5Body -replace 'puppet moveTo\(\(rx, ry, gz\), 0\.2\);', 'puppet moveTo((rx, ry, gz), 0.1);'
+$net5Body = $net5Body -replace '(getcvarfloat\("coop_pyaw"\), 0\), )0\.2\);', '${1}0.1);'
+$net5Body = $net5Body -replace 'while \(i < 3000\)', 'while (i < 100000000)'
+$net5Body = $net5Body -replace '\(rx == 0 && ry == 0\) && i < 3000\)', '(rx == 0 && ry == 0) && i < 100000000)'   # also waits 0.05 now: keep "wait for the peer" unbounded
+# acceptance by log: coop_rx carries the PUPPET's real origin (net4 copied the coop_px string, which
+# only proved the cvar path), once a second; the on-screen line every 20 iterations is enough
+$net5Body = $net5Body -replace 'setcvar\("coop_rx", getcvar\("coop_px"\)\);(\r?\n\s*)por = puppet\.origin;', 'por = puppet.origin;${1}setcvar("coop_rx", "p" + por[0] + " " + por[1] + " " + por[2]);'
+$net5Body = $net5Body -replace 'if \(k >= 10\)', 'if (k >= 20)'
+$net5Body = $net5Body -replace '(?m)^(\s*)iprintln\("COOPN2 n=" \+ i[^\r\n]*\r?\n', ''
+$net5Body = $net5Body -replace '(?m)^(\s*)iprintln\("COOPN2 spawn puppet=[^\r\n]*\r?\n', ''
+$net5Body += @"
+
+coop_publish()
+{
+    setcvar("coop_lx", "p0.000000");
+    setcvar("coop_ly", "p0.000000");
+    setcvar("coop_lz", "p0.000000");
+    setcvar("coop_lyaw", "p0.000000");
+    while (!isdefined(level.player))
+        wait 0.1;
+    for (;;)
+    {
+        po = level.player.origin;
+        an = level.player getplayerangles();
+        setcvar("coop_lx", "p" + po[0]);
+        setcvar("coop_ly", "p" + po[1]);
+        setcvar("coop_lz", "p" + po[2]);
+        setcvar("coop_lyaw", "p" + an[1]);
+        wait 0.05;
+    }
+}
+"@
+
+# net6 = net5 + a call to the bridge's own GSC built-ins (proxy hooks the engine's name lookup; see docs/ENGINE.md). A PROBE, not the release:
+# the compiler resolves the names when the script is compiled, so this mod REFUSES to load (script error: unknown function) unless
+# the d3d9 proxy has installed its hooks. net5 stays the release until the hooks are proven in the game.
+$net6Body = $net5Body -replace 'thread coop_publish\(\);', 'thread coop_chan_publish();'
+$net6Body = $net6Body -replace '(setcvar\("coop_anim", "0000000001"\);)', "`$1`n    probe_v = coop_version();`n    probe_p = coop_ping(41);`n    iprintln(`"COOPN6 bridge=`" + probe_v + `" ping(41)=`" + probe_p);`n    thread coop_probe_loop();"
+# a call every 5 s for the whole mission: replacing the bridge file mid-mission must keep reaching the NEW bridge through the proxy's stub
+$net6Body += @"
+
+coop_chan_publish()
+{
+    while (!isdefined(level.player))
+        wait 0.1;
+    for (;;)
+    {
+        an = level.player getplayerangles();
+        coop_publish_state(level.player.origin, an[1]);
+        wait 0.05;
+    }
+}
+
+coop_probe_loop()
+{
+    i = 100;
+    for (;;)
+    {
+        wait 5;
+        r = coop_ping(i);
+        i = i + 1;
+        r = coop_ping(coop_peer_seq());
+        d = distance(coop_peer_state(), level.player.origin);
+        r = coop_ping(int(d));
+    }
+}
+"@
+
+# net7 = net5 + the script channel, NO probe calls (the release candidate): the local player is published by coop_publish_state and the puppet reads the peer through the built-ins (coop_peer_state / coop_peer_yaw) instead of getcvarfloat on strings the
+# bridge wrote. Same puppet code, only the three reads change. Needs the proxy hooks (like net6).
+$net7Body = $net5Body -replace 'thread coop_publish\(\);', 'thread coop_chan_publish();'
+$net7Body = $net7Body -replace '(?m)^(\s*)coop_orig_main\(\);', "`$1coop_apply_host_skill();`n`$1coop_barrier_now();`n`$1coop_orig_main();"
+# the puppet wears the soldier of the campaign of the map (the player looks different from map to map): done BEFORE the new functions are appended
+$net7Body = $net7Body -replace 'puppet character\\russian_winter_trench_volskey::main\(\);', 'coop_dress(puppet);'
+$net7Body = $net7Body -replace 'character\\russian_winter_trench_volskey::precache\(\);', 'coop_precache_character();'
+$net7Body += @"
+
+coop_grenade_count()
+{
+    g = getentarray("grenade", "classname");
+    n = 0;
+    for (i = 0; i < g.size; i++)
+    {
+        if (distance(g[i].origin, level.player.origin) < 160)
+            n = n + 1;
+    }
+    return n;
+}
+
+coop_watch_grenade()
+{
+    for (;;)
+    {
+        level.player waittill("grenade_fire", gr, wn);
+        level.coop_evc = level.coop_evc + 1;
+        level.coop_evt = level.coop_evc * 8 + 2;
+    }
+}
+
+// a grenade of the local player appeared next to him (it left the hand; a held/cooked grenade appears only when thrown): the throw event for the puppet's
+// animation, its start (relative to him), its velocity (two samples 0.05 s apart) and its kind go to the partner. The notify "grenade_fire" never came here.
+coop_grenade_watch()
+{
+    while (!isdefined(level.player))
+        wait 0.1;
+    for (;;)
+    {
+        wait 0.05;
+        g = getentarray("grenade", "classname");
+        for (i = 0; i < g.size; i++)
+        {
+            if (isdefined(g[i].coop_seen))
+                continue;
+            g[i].coop_seen = true;
+            if (distance(g[i].origin, level.player.origin) > 150)
+                continue;
+            level.coop_evc = level.coop_evc + 1;
+            level.coop_evt = level.coop_evc * 8 + 2;
+            thread coop_grenade_track(g[i]);
+        }
+    }
+}
+
+coop_grenade_track(best)
+{
+    pl = level.player.origin;
+    o0 = best.origin;
+    kind = 0;
+    if (isdefined(best.model))
+    {
+        mn = tolower(best.model);
+        for (k = 0; k + 5 <= mn.size; k++)
+        {
+            if (getsubstr(mn, k, k + 5) == "smoke")
+                kind = 1;
+        }
+    }
+    vel = (0, 0, 0);
+    for (t = 0; t < 8; t++)
+    {
+        wait 0.05;
+        if (!isdefined(best))
+            return;
+        o1 = best.origin;
+        vel = ((o1[0] - o0[0]) * 20, (o1[1] - o0[1]) * 20, (o1[2] - o0[2]) * 20);
+        if (length(vel) > 80)
+            break;
+        o0 = o1;
+    }
+    if (length(vel) <= 80)
+        return;
+    k = coop_char_kind();
+    gw = "";
+    if (isdefined(best.model))
+    {
+        gm = tolower(best.model);
+        for (q = 0; q + 6 <= gm.size; q++)
+        {
+            s6 = getsubstr(gm, q, q + 6);
+            if (s6 == "potato")
+                gw = "potato";
+            if (s6 == "german")
+                gw = "stielhandgranate";
+            if (s6 == "russia")
+                gw = "rgd-33russianfrag";
+            if (s6 == "britis")
+                gw = "mk1britishfrag";
+            if (s6 == "mk2fra")
+                gw = "fraggrenade";
+        }
+    }
+    if (kind == 1)
+    {
+        wn = "smoke_grenade_american";
+        if (k == "british_a" || k == "british_n")
+            wn = "smoke_grenade_british";
+        else if (k == "russian")
+            wn = "smoke_grenade_russian";
+    }
+    else
+    {
+        wn = "fraggrenade";
+        if (k == "british_a" || k == "british_n")
+            wn = "mk1britishfrag";
+        else if (k == "russian")
+            wn = "rgd-33russianfrag";
+        if (gw != "")
+            wn = gw;
+    }
+    coop_send_grenade(wn, (o0[0] - pl[0], o0[1] - pl[1], o0[2] - pl[2]), vel);
+}
+
+// a grenade of the partner: the engine's own projectile is tried first (magicbullet with the grenade weapon)
+coop_grenade_recv()
+{
+    while (!isdefined(level.player))
+        wait 0.1;
+    for (;;)
+    {
+        wait 0.05;
+        gn = coop_pop_grenade();
+        if (gn == "")
+            continue;
+        go = coop_grenade_org();
+        gv = coop_grenade_vel();
+        base = level.coop_puppet_origin;
+        if (!isdefined(base))
+            continue;
+        st = (base[0] + go[0], base[1] + go[1], base[2] + go[2]);
+        thread coop_fake_grenade(gn, st, gv);
+    }
+}
+
+// libya: both players drive a tank of their own. The first one is the level's (the host sits in it), the guest sits in a second one spawned here.
+// The partner's tank is a plain model that follows his reports (a vehicle entity cannot be moved from script: .origin is ignored and an empty one sinks).
+coop_tank_main()
+{
+    if (getcvar("mapname") != "libya" && getcvar("mapname") != "88ridge")      // the two missions where the player drives a tank of his own
+        return;
+    // as soon as the level has seated the player in its tank (about 3 s after the start), not after a fixed long wait
+    pa = undefined;
+    for (n = 0; n < 150 && !isdefined(pa); n++)
+    {
+        wait 0.1;
+        if (isdefined(level.playervehicle) && isdefined(level.playervehicle.classname) && level.playervehicle.classname == "script_vehicle")
+            pa = level.playervehicle;
+    }
+    if (!isdefined(pa))
+        return;
+    // the level's own set-up threads (playerturretsetup, apply_player_rumble: "wait 1", then they read level.playervehicle) must run first:
+    // a swap before that leaves them with no player vehicle (thousands of script runtime errors on a slow PC)
+    wait 1.8;
+    guest = (coop_is_guest() == 1 || getcvar("coop_tank_guest") == "1");
+    mine = pa;
+    if (guest)
+    {
+        r = anglestoright(pa.angles);
+        o = (pa.origin[0] + r[0] * 400, pa.origin[1] + r[1] * 400, pa.origin[2] + 20);
+        pb = spawnvehicle(pa.model, "coop_tank", "crusader_player", o, pa.angles);
+        if (!isdefined(pb))
+            return;
+        // what the level's own vehicle setup does for a vehicle placed in the map
+        pb.vehicletype = "crusader_player";
+        pb.simpletype = "tank";
+        pb thread [[level.vehicleInitThread["crusader_player"][pa.model]]]();
+        pb maps\_vehicledrive::setup_vehicle_tank();
+        // no AI aiming/firing (the engine ignores a spawnflags assignment): the attack loops end when these two are false
+        pb.script_turret = false;
+        pb.script_attackai = false;
+        wait 0.5;
+        // the same MG set-up as the level's own playerturretsetup(): the player's MG, no second one
+        newarray = [];
+        for (i = 0; i < pb.mgturret.size; i++)
+        {
+            pb.mgturret[i].isplayerturret = true;
+            if (i == 1)
+                pb.mgturret[i] delete();
+            else
+                newarray[newarray.size] = pb.mgturret[i];
+        }
+        pb.mgturret = newarray;
+        mine = pb;
+        pa useby(level.player);
+        for (k = 0; k < 30 && isdefined(pa getvehicleowner()); k++)
+            wait 0.1;
+        pa maps\_vehicledrive::vehicle_exit();
+        mine thread maps\_vehicledrive::vehicle_wait(true);
+        wait 0.3;
+        // the entry above reads the owner at once: on a slow PC the seat is not taken yet and it then treats it as an exit. Make sure.
+        for (k = 0; k < 20; k++)
+        {
+            ow = mine getvehicleowner();
+            if (isdefined(ow) && ow == level.player)
+                break;
+            mine useby(level.player);
+            wait 0.3;
+        }
+        if (!isdefined(level.playervehicle) || level.playervehicle != mine)
+        {
+            level.playervehicle = mine;
+            level.playeronvehicle = true;
+            mine thread maps\_vehicledrive::vehicle_enter();
+        }
+        iprintln("COOPT seated after " + k + " retries");
+        // the level's own tank is not used any more: the partner's model stands in its place
+        pa hide();
+    }
+    ghost = spawn("script_model", pa.origin);
+    ghost setmodel("xmodel/vehicle_crusader2_static");
+    thread coop_tank_publish(mine);
+    thread coop_tank_follow(ghost);
+    iprintln("COOPT tanks ready, guest=" + guest);
+}
+
+coop_tank_publish(tank)
+{
+    tank.coop_fires = 0;
+    tank thread coop_tank_count_fire();
+    for (;;)
+    {
+        wait 0.05;
+        if (!isdefined(tank))
+            return;
+        coop_send_tank(tank.origin, tank.angles, tank gettagangles("tag_turret"), tank.coop_fires);
+    }
+}
+
+coop_tank_count_fire()
+{
+    self endon("death");
+    for (;;)
+    {
+        self waittill("turret_fire");
+        self.coop_fires = self.coop_fires + 1;
+    }
+}
+
+coop_tank_follow(ghost)
+{
+    base = ghost.origin;
+    baseang = ghost.angles;
+    ghost hide();
+    lastfire = coop_tank_fire();
+    shown = 0;
+    for (;;)
+    {
+        wait 0.05;
+        if (coop_tank_age() > 3000)
+            continue;
+        p = coop_tank_pos();
+        if (coop_peer_solo())
+        {
+            // solo test only: the copy stands 500 units east (the height is the partner's own: a ground trace here hit other vehicles and made it jump)
+            p = (p[0] + 500, p[1], p[2]);
+        }
+        if (!shown)
+        {
+            shown = 1;
+            ghost.origin = p;
+            ghost show();
+        }
+        ghost moveTo(p, 0.06);
+        ghost rotateTo(coop_tank_ang(), 0.06);
+        f = coop_tank_fire();
+        if (f != lastfire)
+        {
+            lastfire = f;
+            thread coop_tank_shot(ghost, p, coop_tank_turret());
+        }
+    }
+}
+
+// a shot of the partner's tank: muzzle fire and an explosion where the shell hits; damages enemies only
+coop_tank_shot(ghost, p, ang)
+{
+    fw = anglestoforward(ang);
+    st = (p[0] + fw[0] * 150, p[1] + fw[1] * 150, p[2] + 90 + fw[2] * 150);
+    ghost playsound("crusader_fire");
+    // muzzle blast: the small explosion effect (a rifle flash is invisible at this size)
+    if (isdefined(level.coop_fx_boom))
+        playfx(level.coop_fx_boom, st);
+    else if (isdefined(level.coop_fx_rifle))
+        playfx(level.coop_fx_rifle, st, fw);
+    en = (st[0] + fw[0] * 12000, st[1] + fw[1] * 12000, st[2] + fw[2] * 12000);
+    tr = bullettrace(st, en, false, undefined);
+    hit = tr["position"];
+    wait 0.4;
+    if (isdefined(level.coop_fx_boom))
+        playfx(level.coop_fx_boom, hit);
+    earthquake(0.3, 0.6, hit, 700);
+    ai = getaiarray("axis");
+    for (i = 0; i < ai.size; i++)
+    {
+        if (!isdefined(ai[i]) || !isalive(ai[i]))
+            continue;
+        d = distance(ai[i].origin + (0, 0, 32), hit);
+        if (d < 300)
+            ai[i] doDamage(int(600 * (1 - d / 300)) + 20, hit);
+    }
+}
+
+// START BARRIER: both PCs load a mission at different speeds, so the mission would begin at different moments on the two PCs (scripted scenes then
+// diverge for good). This is called from main() BEFORE the mission's own script and does not wait: the bridge pauses the game at once (not one frame of
+// the world runs, no sound), shows its own notice window and lets go when the partner has reached the same point in the same mission (or after 20 s).
+// Off with the console variable coop_barrier "off"; nothing happens without a linked partner.
+coop_barrier_now()
+{
+    if (getcvar("coop_barrier") == "off")
+        return;
+    if (coop_link_active() == 0)
+        return;
+    coop_barrier_begin(getcvar("mapname"), getcvarint("g_gameskill"), getcvarfloat("coop_barrier_delay"));    // the delay is a dev setting (pretend to load slower)
+}
+
+// the partner's grenade: our own flight (gravity, bounces off what bullettrace finds), then an explosion with fire/dust, sound, a shake and damage for ENEMIES only
+// (the engine's magicbullet handles bullets only; the local player and friends are never hurt by it)
+coop_fake_grenade(name, st, vel)
+{
+    smoke = 0;
+    if (name == "smoke_grenade_american" || name == "smoke_grenade_british" || name == "smoke_grenade_russian" || name == "smoke_grenade_german")
+        smoke = 1;
+    // the throw animation of the puppet needs a moment to bring the arm forward: the grenade leaves the hand later than the event arrives
+    wait 0.45;
+    mdl = getweaponmodel(name);
+    ent = spawn("script_model", st);
+    if (isdefined(mdl))
+        ent setmodel(mdl);
+    pos = st;
+    v = vel;
+    rest = 0;
+    t = 0;
+    while (t < 3.4)
+    {
+        wait 0.05;
+        t = t + 0.05;
+        if (rest)
+            continue;
+        v = (v[0], v[1], v[2] - 40);
+        np = (pos[0] + v[0] * 0.05, pos[1] + v[1] * 0.05, pos[2] + v[2] * 0.05);
+        tr = bullettrace(pos, np, false, undefined);
+        if (tr["fraction"] < 1)
+        {
+            n = tr["normal"];
+            dp = v[0] * n[0] + v[1] * n[1] + v[2] * n[2];
+            v = ((v[0] - 2 * dp * n[0]) * 0.4, (v[1] - 2 * dp * n[1]) * 0.4, (v[2] - 2 * dp * n[2]) * 0.4);
+            tp = tr["position"];
+            pos = (tp[0] + n[0] * 2, tp[1] + n[1] * 2, tp[2] + n[2] * 2);
+            if (length(v) < 60)
+            {
+                rest = 1;
+                v = (0, 0, 0);
+            }
+        }
+        else
+            pos = np;
+        ent moveTo(pos, 0.05);
+    }
+    if (name == "potato")
+    {
+        // the potato of the Russian missions is not a weapon: it just lands and is gone after a while
+        wait 6;
+        ent delete();
+        return;
+    }
+    ent playsound("grenade_explode_default");
+    if (smoke)
+    {
+        if (isdefined(level.coop_fx_smoke))
+            playfx(level.coop_fx_smoke, pos);
+    }
+    else
+    {
+        if (isdefined(level.coop_fx_boom))
+            playfx(level.coop_fx_boom, pos);
+        else if (isdefined(level.coop_fx_rifle))
+            playfx(level.coop_fx_rifle, pos, (0, 0, 1));
+        earthquake(0.4, 0.8, pos, 500);
+        ai = getaiarray("axis");
+        for (i = 0; i < ai.size; i++)
+        {
+            if (!isdefined(ai[i]) || !isalive(ai[i]))
+                continue;
+            d = distance(ai[i].origin + (0, 0, 32), pos);
+            if (d < 260)
+                ai[i] doDamage(int(320 * (1 - d / 260)) + 10, pos);
+        }
+    }
+    wait 0.1;
+    ent delete();
+}
+
+coop_chan_publish()
+{
+    while (!isdefined(level.player))
+        wait 0.1;
+    level.coop_evc = 0;
+    level.coop_evt = 0;
+    r = coop_ping(7777);
+    thread coop_enemy_watch();
+    thread coop_kill_recv();
+    thread coop_level_watch();
+    thread coop_health_hud();
+    thread coop_flag_sync();
+    thread coop_grenade_recv();
+    thread coop_grenade_watch();
+    thread coop_tank_main();
+    mpress = 0;
+    lasttg = 0;
+    lastdead = 0;
+    lastwi = -1;
+    awi = -1;
+    lastammo = -1;
+    lastclip = -1;
+    autorl = 0;
+    maxclip = 0;
+    lastbp = 0;
+    level.coop_fc = 0;
+    for (;;)
+    {
+        wn = level.player getcurrentweapon();
+        wi = coop_weapon_id(tolower(wn));
+        if (wi != lastwi)
+        {
+            lastwi = wi;
+            if (wi == 0 && isdefined(wn) && wn != "" && tolower(wn) != "none")
+                iprintln("COOPN weapon not in the table: [" + wn + "]");
+        }
+        // death: event type 5 once per death; the peer then loads its last save too (loadgame_continue), so both restart from a checkpoint
+        dead = 0;
+        if (isdefined(level.player.health) && level.player.health <= 0)
+            dead = 1;
+        if (dead && !lastdead && !isdefined(level.coop_induced))
+        {
+            level.coop_evc = level.coop_evc + 1;
+            level.coop_evt = level.coop_evc * 8 + 5;
+        }
+        if (!dead)
+            level.coop_induced = undefined;
+        lastdead = dead;
+        if (level.player ismeleeing())
+        {
+            if (!mpress)
+            {
+                mpress = 1;
+                level.coop_evc = level.coop_evc + 1;
+                level.coop_evt = level.coop_evc * 8 + 1;
+            }
+        }
+        else
+            mpress = 0;
+        an = level.player getplayerangles();
+        // a shot event for every real shot (the ammunition of the held weapon went down; reload and weapon change do not count):
+        // event = ((shot counter * 256) + pitch + 90) * 8 + 3
+        ammo = level.player getammocount(wn);
+        shot = 0;
+        if (wi == awi && ammo < lastammo && lastammo - ammo < 10)
+            shot = lastammo - ammo;
+        if (wi >= 28)
+        {
+            shot = 0;
+            if (level.player attackbuttonpressed())
+                shot = 1;
+        }   // several rounds can fall between two samples of a fast weapon: the counter below carries all of them
+        clip = -1;
+        if (level.player getweaponslotweapon("primary") == wn)
+            clip = level.player getweaponslotclipammo("primary");
+        else if (level.player getweaponslotweapon("primaryb") == wn)
+            clip = level.player getweaponslotclipammo("primaryb");
+        if (!isdefined(clip))
+            clip = -1;
+        // reload: the moment of the reload key press while the magazine is not full (the clip only grows at the END of a reload, which looked late on the puppet)
+        if (wi != awi)
+            maxclip = clip;
+        if (clip > maxclip)
+            maxclip = clip;
+        bp = level.player buttonpressed("r");   // buttonpressed takes KEY names (a single character is the key itself): R is the default reload key
+        if (!isdefined(bp))
+            bp = 0;
+        rl = 0;
+        if (bp && !lastbp && wi == awi && clip >= 0 && clip < maxclip)
+            rl = 1;
+        // the magazine ran empty and the game reloads by itself (reserve left): show the reload a moment after the last shot
+        if (wi == awi && lastclip > 0 && clip == 0 && ammo > 0)
+            autorl = gettime() + 350;
+        lastbp = bp;
+        awi = wi;
+        lastammo = ammo;
+        lastclip = clip;
+        if (rl && !shot && wi > 0)
+        {
+            level.coop_evc = level.coop_evc + 1;
+            level.coop_evt = level.coop_evc * 8 + 4;
+        }
+        if (autorl > 0 && gettime() >= autorl)
+        {
+            autorl = 0;
+            level.coop_evc = level.coop_evc + 1;
+            level.coop_evt = level.coop_evc * 8 + 4;
+        }
+        if (shot && wi > 0)
+        {
+            level.coop_fc = (level.coop_fc + shot - 1) % 999 + 1;
+            pb = int(an[0] + 90.5);
+            if (pb < 0)
+                pb = 0;
+            if (pb > 180)
+                pb = 180;
+            level.coop_evt = (level.coop_fc * 256 + pb) * 8 + 3;
+        }
+        po = level.player.origin;
+        st = 0;
+        sn = level.player getstance();
+        if (sn == "crouch")
+            st = 1;
+        else if (sn == "prone")
+            st = 2;
+        if (!level.player isonground() && st == 0)
+            st = 3;
+        if (coop_player_link() > 0)
+            st = 4;
+        // F8 (the bridge): go to the partner, 60 units beside him; alive and on foot only
+        if (coop_pop_teleport() && !dead)
+        {
+            tpv = coop_peer_state();
+            level.player setorigin((tpv[0] + 60, tpv[1], tpv[2] + 8));
+        }
+        hp = level.player.health;
+        if (!isdefined(hp))
+            hp = 500;
+        mh = getcvarint("g_player_maxhealth");
+        if (mh < 1)
+            mh = 500;
+        hp = int(hp * 100 / mh);
+        if (hp < 0)
+            hp = 0;
+        if (hp > 100)
+            hp = 100;
+        coop_publish_state(po, an[1], st, level.coop_evt, wi, coop_player_parent(), hp);
+        wait 0.05;
+    }
+}
+"@
+$net7Body = $net7Body -replace 'rx = getcvarfloat\("coop_px"\);', 'pv = coop_peer_state(); rx = pv[0];'
+$net7Body = $net7Body -replace 'ry = getcvarfloat\("coop_py"\);', 'ry = pv[1];'
+$net7Body = $net7Body -replace 'getcvarfloat\("coop_pyaw"\)', 'coop_peer_yaw()'
+# the puppet's height comes from the PEER's own height (a trace from 48 above to 96 below it: the floor under him, also inside a building),
+# not from a trace starting 512 above the LOCAL player, which hit the roof when the partner was inside a building
+$net7Body = $net7Body -replace 'bulletTrace\(\(rx, ry, po\[2\] \+ 512\), \(rx, ry, po\[2\] - 1024\)', 'bulletTrace((rx, ry, pv[2] + 48), (rx, ry, pv[2] - 96)'
+$net7Body = $net7Body -replace 'gz = po\[2\];', 'gz = pv[2];'
+$net7Body = $net7Body -replace 'puppet moveTo\(\(rx, ry, gz\), 0\.1\);', "if (coop_peer_stance() >= 3)`n                gz = pv[2];`n            if (!isdefined(puppet.coop_veh))`n                puppet moveTo((rx, ry, gz), 0.1);"
+$net7Body = $net7Body -replace 'rotateTo\(\(0, coop_peer_yaw\(\), 0\)', 'rotateTo((coop_pose_pitch(), coop_peer_yaw(), 0)'
+$net7Body = $net7Body -replace 'puppet rotateTo\(\(coop_pose_pitch\(\), coop_peer_yaw\(\), 0\), 0\.1\);', "if (!isdefined(puppet.coop_veh))`n            puppet rotateTo((coop_pose_pitch(), coop_peer_yaw(), 0), 0.1);"
+# the console log is switched on by the profile (seta logfile "2" in config.cfg of the TEST profile) so that compile errors are logged too; a script may not set it then
+$net7Body = $net7Body -replace 'setcvar\("logfile", "2"\);', ''
+# animation by speed: the puppet runs (the stock drone run loop) while it moves faster than ~50 units/s, else the calm idle pose; the speed is the
+# puppet's own displacement, so nothing extra goes over the network
+$net7Body = $net7Body -replace 'puppet thread coop_pose\(\);', 'puppet thread coop_pose_move();'
+$net7Body += @"
+
+coop_pose_pitch()
+{
+    return 0;
+}
+
+coop_pose_move()
+{
+    self endon("death");
+    wait 0.1;
+    last = self.origin;
+    cur = -1;
+    nextrestart = 0;
+    lastev = coop_peer_event();
+    busyuntil = 0;
+    lastdbg = 0;
+    lastw = -1;
+    lastpz = 0;
+    lastun = 0;
+    jdown = 0;
+    zero = 0;
+    vhid = 0;
+    self.coop_veh = undefined;
+    self.coop_wmodel = getweaponmodel("ppsh");
+    while (isdefined(self))
+    {
+        pstv = coop_peer_stance();
+        if (pstv == 4 && coop_peer_parent() > 0 && !isdefined(self.coop_veh))
+        {
+            if (!isdefined(self.coop_vwait) || gettime() > self.coop_vwait)
+            {
+                v = coop_find_vehicle(coop_peer_state());
+                if (isdefined(v))
+                    self coop_ride(v);
+                else
+                    self.coop_vwait = gettime() + 3000;
+            }
+        }
+        else if ((pstv != 4 || coop_peer_parent() == 0) && isdefined(self.coop_veh))
+        {
+            self unlink();
+            self.coop_veh = undefined;
+            r = coop_ping(7002);
+        }
+        wid = coop_peer_weapon();
+        if (wid == 0)
+            zero = zero + 1;
+        else
+            zero = 0;
+        if (wid != lastw && (wid != 0 || zero >= 8))
+        {
+            lastw = wid;
+            if (isdefined(self.coop_wmodel) && self coop_is_attached(self.coop_wmodel))
+                self detach(self.coop_wmodel, "tag_weapon_right");
+            self.coop_wmodel = undefined;
+            if (wid > 0 && wid <= 27)
+            {
+                mdl = getweaponmodel(level.coop_weps[wid - 1]);
+                if (isdefined(mdl))
+                {
+                    if (!(self coop_is_attached(mdl)))
+                        self attach(mdl, "tag_weapon_right");
+                    self.coop_wmodel = mdl;
+                }
+            }
+        }
+        // (the debug pose selector coop_anim 10-35 is gone: every animation name this script mentions counts against the engine limit of the animation tree)
+        ev = coop_peer_event();
+        if (ev != lastev)
+        {
+            lastev = ev;
+            ty = ev % 8;
+            t = 0;
+            fw = anglestoforward((0, self.angles[1], 0));
+            if (ty == 1)
+            {
+                self setflaggedanimknobrestart("coop_pose", %stand_aim_straight, 1, 0.1, 1);
+                home = self.origin;
+                self moveTo(home + (fw[0] * 45, fw[1] * 45, 0), 0.12);
+                wait 0.15;
+                self moveTo(home, 0.2);
+                t = 400;
+            }
+            else if (ty == 2)
+            {
+                if (coop_peer_stance() == 2)
+                    t = 900;
+                else if (coop_peer_stance() == 1)
+                {
+                    self setflaggedanimknobrestart("coop_pose", %crouch_grenade_throw, 1, 0.1, 1);
+                    t = int(getanimlength(%crouch_grenade_throw) * 1000);
+                }
+                else
+                {
+                    self setflaggedanimknobrestart("coop_pose", %stand_grenade_throw, 1, 0.1, 1);
+                    t = int(getanimlength(%stand_grenade_throw) * 1000);
+                }
+            }
+            else if (ty == 3)
+            {
+                spitch = (int((ev - 3) / 8) % 256) - 90;
+                swid = coop_peer_weapon();
+                seye = self.origin + (0, 0, 60);
+                sfw = (1, 0, 0);
+                sfc = int(int((ev - 3) / 8) / 256);
+                if (!isdefined(self.coop_fc))
+                    self.coop_fc = sfc - 1;
+                nsh = (sfc - self.coop_fc + 999) % 999;
+                self.coop_fc = sfc;
+                if (nsh < 1 || nsh > 8)
+                    nsh = 1;
+                if (swid > 0)
+                {
+                    syaw = self.angles[1];
+                    if (coop_peer_solo())
+                    {
+                        pan = level.player getplayerangles();
+                        syaw = pan[1];
+                    }
+                    sfw = anglestoforward((spitch, syaw, 0));
+                    seye = self.origin + (0, 0, 60);
+                    if (coop_peer_stance() == 1)
+                        seye = self.origin + (0, 0, 40);
+                    // the peer's bullets must never hit the local player: when the first thing on the line is the player, the bullet stops 80 units short of him
+                    sst = seye + (sfw[0] * 30, sfw[1] * 30, sfw[2] * 30);
+                    sen = seye + (sfw[0] * 3000, sfw[1] * 3000, sfw[2] * 3000);
+                    shtr = bullettrace(sst, sen, true, self);
+                    nofire = 0;
+                    // geometry first (any distance, walls ignored): no bullet at all when the line passes within 130 units of the local player
+                    ppo = level.player.origin;
+                    pcn = (ppo[0], ppo[1], ppo[2] + 40);
+                    prel = (pcn[0] - sst[0], pcn[1] - sst[1], pcn[2] - sst[2]);
+                    ptt = prel[0] * sfw[0] + prel[1] * sfw[1] + prel[2] * sfw[2];
+                    if (ptt > -60 && ptt < 3100)
+                    {
+                        pcl = (sst[0] + sfw[0] * ptt, sst[1] + sfw[1] * ptt, sst[2] + sfw[2] * ptt);
+                        if (distance(pcl, pcn) < 130)
+                            nofire = 1;
+                    }
+                    if (isdefined(shtr["entity"]) && shtr["entity"] == level.player)
+                    {
+                        spos = shtr["position"];
+                        if (distance(sst, spos) < 120)
+                            nofire = 1;
+                        else
+                            sen = (spos[0] - sfw[0] * 80, spos[1] - sfw[1] * 80, spos[2] - sfw[2] * 80);
+                    }
+                    swpn = level.coop_weps[swid - 1];
+                    if (swid > 27)
+                        swpn = "bren";
+                    for (k = 0; k < nsh && !nofire; k++)
+                    {
+                        magicbullet(swpn, sst, sen);
+                        if (k + 1 < nsh)
+                            wait 0.03;
+                    }
+                }
+                if (coop_peer_stance() == 2)
+                    self setflaggedanimknobrestart("coop_pose", %prone_shoot_straight, 1, 0.05, 1);
+                else if (coop_peer_stance() == 1)
+                    self setflaggedanimknobrestart("coop_pose", %crouch_shoot_straight, 1, 0.05, 1);
+                else
+                    self setflaggedanimknobrestart("coop_pose", %stand_shoot_straight, 1, 0.05, 1);
+                t = 160;
+                if (swid > 0)
+                {
+                    swn = level.coop_weps[swid - 1];
+                    sfx = level.coop_fx_rifle;
+                    playfxontag(sfx, self, "tag_flash");
+                    if (swn == "mosin_nagant" || swn == "mosin_nagant_sniper" || swn == "kar98k" || swn == "kar98k_sniper" || swn == "enfield" || swn == "enfield_scope" || swn == "springfield")
+                    {
+                        // bolt action: the reload clip sped up stands in for working the bolt (placeholder until a real rechamber animation is found)
+                        wait 0.3;
+                        if (coop_peer_stance() == 2)
+                            t = 300;
+                        else if (coop_peer_stance() == 1)
+                        {
+                            self setflaggedanimknobrestart("coop_pose", %crouch_rechamber, 1, 0.1, 1);
+                            t = int(getanimlength(%crouch_rechamber) * 1000);
+                        }
+                        else
+                        {
+                            self setflaggedanimknobrestart("coop_pose", %stand_rechamber, 1, 0.1, 1);
+                            t = int(getanimlength(%stand_rechamber) * 1000);
+                        }
+                    }
+                }
+            }
+            else if (ty == 4)
+            {
+                // prone: no reload clip (the standing one would make the puppet get up); it stays in its prone pose
+                if (coop_peer_stance() == 1)
+                {
+                    self setflaggedanimknobrestart("coop_pose", %reload_crouch_rifle, 1, 0.1, 1);
+                    t = int(getanimlength(%reload_crouch_rifle) * 1000);
+                }
+                else if (coop_peer_stance() != 2)
+                {
+                    self setflaggedanimknobrestart("coop_pose", %reload_stand_rifle, 1, 0.1, 1);
+                    t = int(getanimlength(%reload_stand_rifle) * 1000);
+                }
+                else
+                    t = 300;
+            }
+            busyuntil = gettime() + t;
+            cur = -1;
+        }
+        if (gettime() < busyuntil)
+        {
+            wait 0.1;
+            continue;
+        }
+        o = self.origin;
+        level.coop_puppet_origin = o;
+        d = distance((o[0], o[1], 0), (last[0], last[1], 0));
+        last = o;
+        st = coop_peer_stance();
+        mv = 0;
+        thr = 12;
+        if (st == 2)
+            thr = 3;
+        if (d > thr)
+            mv = 1;
+        key = st * 2 + mv;
+        // no weapon in the partner's hands (his weapon id stays 0): the unarmed idle and run clips instead of the rifle-ready pose
+        un = 0;
+        if (lastw == 0 || getcvarint("coop_un") == 1)       // coop_un 1: a test switch (the partner is shown unarmed)
+            un = 1;
+        now = gettime();
+        pvj = coop_peer_state();
+        dz = pvj[2] - lastpz;
+        if (st == 3 && cur >= 6 && cur <= 7 && !jdown && dz < -3)
+        {
+            // the partner started to fall: the landing part of a jump
+            self setflaggedanimknobrestart("coop_pose", %jump_down_56, 1, 0.15, 1.2);
+            jdown = 1;
+        }
+        lastpz = pvj[2];
+        if (key != cur || now >= nextrestart || un != lastun)
+        {
+            lastun = un;
+            t = 600000;
+            if (st == 3)
+            {
+                // airborne: a rising partner gets the leap clip (sped up), one that is already falling gets the jump-down clip
+                jdown = 0;
+                if (dz < -2)
+                {
+                    self setflaggedanimknobrestart("coop_pose", %jump_down_56, 1, 0.15, 1.2);
+                    jdown = 1;
+                }
+                else
+                    self setflaggedanimknobrestart("coop_pose", %jump_across_100, 1, 0.1, 1.5);
+            }
+            else if (st == 2)
+            {
+                if (mv)
+                    self setflaggedanimknobrestart("coop_pose", %prone_crawl, 1, 0.2, 1);
+                else if (un)
+                    self setflaggedanimknobrestart("coop_pose", %wounded_crawlidle, 1, 0.2, 1);       // lying, no rifle to aim with
+                else
+                    self setflaggedanimknobrestart("coop_pose", %prone_aim_idle, 1, 0.2, 1);
+            }
+            else if (st == 1)
+            {
+                // crouching: always the held end pose of the crouch shot, aiming (chosen as the permanent crouch pose); no crouch run, which did not stop when he stopped
+                if (un && mv)
+                {
+                    self setflaggedanimknobrestart("coop_pose", %crouchwalk_loop, 1, 0.2, 1);
+                    t = int(getanimlength(%crouchwalk_loop) * 1000);
+                }
+                else if (un)
+                    self setflaggedanimknobrestart("coop_pose", %unarmed_crouch_idle1, 1, 0.2, 1);    // no weapon: hands down instead of aiming
+                else
+                    self setflaggedanimknobrestart("coop_pose", %crouch_shoot_straight, 1, 0.2, 1);
+            }
+            else if (st == 4)
+                self setflaggedanimknobrestart("coop_pose", %stand_alert_2, 1, 0.2, 1);
+            else if (mv)
+            {
+                if (un)
+                {
+                    self setflaggedanimknobrestart("coop_pose", %unarmed_run_russian, 1, 0.2, 1);
+                    t = int(getanimlength(%unarmed_run_russian) * 1000);
+                }
+                else
+                {
+                    self setflaggedanimknobrestart("coop_pose", %drone_run_forward_1, 1, 0.2, 1);
+                    t = int(getanimlength(%drone_run_forward_1) * 1000);
+                }
+            }
+            else if (un)
+                self setflaggedanimknobrestart("coop_pose", %standunarmed_idle_loop, 1, 0.2, 1);
+            else
+                self setflaggedanimknobrestart("coop_pose", %stand_alert_2, 1, 0.2, 1);
+            cur = key;
+            nextrestart = now + t;
+        }
+        if (st == 3)
+            wait 0.08;
+        else
+            wait 0.25;
+    }
+}
+"@
+$net7Body += @"
+
+coop_find_vehicle(org)
+{
+    pn = coop_peer_parent();
+    if (pn > 0)
+    {
+        // the peer's parent is known by its entity number: look for exactly that entity among every kind of mover/model/vehicle
+        // (a ride rig or a cut-scene mover is a script_model/script_origin, not a script_vehicle); never fall back to another one
+        cls = [];
+        cls[0] = "script_vehicle";
+        cls[1] = "script_model";
+        cls[2] = "script_origin";
+        cls[3] = "script_brushmodel";
+        for (ci = 0; ci < cls.size; ci++)
+        {
+            g = getentarray(cls[ci], "classname");
+            for (i = 0; i < g.size; i++)
+            {
+                if (g[i] getentitynumber() == pn)
+                    return g[i];
+            }
+        }
+        return;
+    }
+    g = getentarray("script_vehicle", "classname");
+    best = undefined;
+    bd = 700;
+    for (i = 0; i < g.size; i++)
+    {
+        d = distance(g[i].origin, org);
+        if (d < bd)
+        {
+            bd = d;
+            best = g[i];
+        }
+    }
+    return best;
+}
+
+coop_ride(v)
+{
+    // the place to take is where the PEER really is (his reported position), not where the puppet currently stands: on a landing boat the
+    // puppet's own spawn point comes from a ground trace and can be on the sea bed
+    P = coop_peer_state();
+    vo0 = v.origin;
+    d = P - vo0;
+    fw = anglestoforward(v.angles);
+    rt = anglestoright(v.angles);
+    up = anglestoup(v.angles);
+    a = vectordot(d, fw);
+    b = vectordot(d, rt);
+    c = vectordot(d, up);
+    bestk = -1;
+    beste = 1000000;
+    for (k = 0; k < 4; k++)
+    {
+        sx = 1;
+        sy = 1;
+        if (k == 1 || k == 3)
+            sy = -1;
+        if (k >= 2)
+            sx = -1;
+        self linkto(v, "", (a * sx, b * sy, c), (0, 0, 0));
+        wait 0.1;
+        want = P + (v.origin - vo0);
+        e = distance(self.origin, want);
+        if (e < beste)
+        {
+            beste = e;
+            bestk = k;
+        }
+        self unlink();
+    }
+    r = coop_ping(8000 + bestk * 10 + int(beste / 10));
+    if (bestk < 0 || beste > 120)
+    {
+        self.coop_vwait = gettime() + 5000;
+        return;
+    }
+    sx = 1;
+    sy = 1;
+    if (bestk == 1 || bestk == 3)
+        sy = -1;
+    if (bestk >= 2)
+        sx = -1;
+    // own place: the owner's screenshot showed the puppet overlapping a seated soldier; pulled toward the centre line (the aisle). A shift
+    // backwards put it behind the stern of the short landing boat (owner); the owner then asked for a little forward along the facing direction (+40)
+    a2 = a + 40;
+    b2 = b * 0.2;
+    self.coop_veh = v;
+    self linkto(v, "", (a2 * sx, b2 * sy, c), (0, 0, 0));
+    wait 0.3;
+    // diagnostics for tuning (bridge log): distance puppet-player, then the three offsets (+20000 keeps them positive)
+    r = coop_ping(9000 + int(distance(self.origin, level.player.origin)));
+    r = coop_ping(20000 + int(a2 * sx));
+    r = coop_ping(20000 + int(b2 * sy));
+    r = coop_ping(20000 + int(c));
+}
+
+coop_local_offset(veh, world)
+{
+    d = world - veh.origin;
+    fw = anglestoforward(veh.angles);
+    rt = anglestoright(veh.angles);
+    up = anglestoup(veh.angles);
+    return (vectordot(d, fw), 0 - vectordot(d, rt), vectordot(d, up));
+}
+
+coop_char_kind()
+{
+    m = getcvar("mapname");
+    if (m == "duhoc_assault" || m == "duhoc_defend" || m == "hill400_assault" || m == "hill400_defend" || m == "silotown_assault" || m == "bergstein" || m == "rhine" || m == "newvillers")
+        return "american";
+    if (m == "beltot" || m == "breakout" || m == "crossroads")
+        return "british_n";
+    if (m == "libya" || m == "elalamein" || m == "eldaba" || m == "toujane" || m == "toujane_ride" || m == "matmata" || m == "88ridge" || m == "decoytown" || m == "decoytrenches")
+        return "british_a";
+    return "russian";
+}
+
+coop_precache_character()
+{
+    k = coop_char_kind();
+    if (k == "american")
+        character\american_ranger_normandy::precache();
+    else if (k == "british_n")
+        character\british_infantry_normandy::precache();
+    else if (k == "british_a")
+        character\british_infantry_africa::precache();
+    else
+        character\russian_winter_trench_volskey::precache();
+}
+
+coop_dress(p)
+{
+    k = coop_char_kind();
+    if (k == "american")
+        p character\american_ranger_normandy::main();
+    else if (k == "british_n")
+        p character\british_infantry_normandy::main();
+    else if (k == "british_a")
+        p character\british_infantry_africa::main();
+    else
+        p character\russian_winter_trench_volskey::main();
+}
+
+coop_is_attached(model)
+{
+    n = self getattachsize();
+    for (i = 0; i < n; i++)
+    {
+        if (self getattachmodelname(i) == model && self getattachtagname(i) == "tag_weapon_right")
+            return true;
+    }
+    return false;
+}
+
+coop_precache_weapons()
+{
+    precacheString(&"COOP_PARTNER");
+    precacheString(&"COOP_WAITING");
+    gk = coop_char_kind();
+    if (gk == "british_a" || gk == "british_n")
+        precacheItem("mk1britishfrag");
+    else if (gk == "russian")
+        precacheItem("rgd-33russianfrag");
+    else
+        precacheItem("fraggrenade");
+    precacheItem("potato");
+    precacheItem("stielhandgranate");
+    level.coop_fx_rifle = loadfx("fx/muzzleflashes/rifleflash");
+    if (getcvar("mapname") == "libya" || getcvar("mapname") == "88ridge")
+        precacheModel("xmodel/vehicle_crusader2_static");
+    if (getcvar("mapname") != "duhoc_assault")
+    {
+        level.coop_fx_boom = loadfx("fx/explosions/grenadeExp_dirt");
+        level.coop_fx_smoke = loadfx("fx/smoke/grenade_smoke");
+    }
+    if (gk == "british_a" || gk == "british_n")
+        precacheItem("smoke_grenade_british");
+    else if (gk == "russian")
+        precacheItem("smoke_grenade_russian");
+    else
+        precacheItem("smoke_grenade_american");
+    // ONE flash effect only: a level has a small, fixed number of effect slots (duhoc_assault ran out of them with three: "G_FindConfigstringIndex: overflow")
+    level.coop_weps = [];
+    level.coop_weps[0] = "mosin_nagant";
+    level.coop_weps[1] = "mosin_nagant_sniper";
+    level.coop_weps[2] = "ppsh";
+    level.coop_weps[3] = "pps42";
+    level.coop_weps[4] = "tt30";
+    level.coop_weps[5] = "svt40";
+    level.coop_weps[6] = "kar98k";
+    level.coop_weps[7] = "mp40";
+    level.coop_weps[8] = "mp44";
+    level.coop_weps[9] = "g43";
+    level.coop_weps[10] = "luger";
+    level.coop_weps[11] = "colt";
+    level.coop_weps[12] = "m1garand";
+    level.coop_weps[13] = "thompson";
+    level.coop_weps[14] = "m1carbine";
+    level.coop_weps[15] = "bar";
+    level.coop_weps[16] = "bren";
+    level.coop_weps[17] = "enfield";
+    level.coop_weps[18] = "enfield_scope";
+    level.coop_weps[19] = "g43_sniper";
+    level.coop_weps[20] = "kar98k_sniper";
+    level.coop_weps[21] = "panzerfaust";
+    level.coop_weps[22] = "panzerschreck";
+    level.coop_weps[23] = "springfield";
+    level.coop_weps[24] = "sten";
+    level.coop_weps[25] = "thompson_latewar";
+    level.coop_weps[26] = "webley";
+    // mounted machine guns (ids 28-32): only recognised, never precached here (a level with such a turret precaches them); the puppet shoots them with the bren
+    level.coop_weps[27] = "mg42_bipod_stand";
+    level.coop_weps[28] = "mg42_bipod_duck";
+    level.coop_weps[29] = "mg42_bipod_prone";
+    level.coop_weps[30] = "30cal_stand";
+    level.coop_weps[31] = "30cal_prone";
+    for (i = 0; i < 27; i++)
+        precacheItem(level.coop_weps[i]);
+}
+
+coop_weapon_id(name)
+{
+    for (i = 0; i < level.coop_weps.size; i++)
+    {
+        if (level.coop_weps[i] == name)
+            return i + 1;
+    }
+    return 0;
+}
+"@
+# the puppet shows the weapon the peer really holds (table above; precached at level start)
+$net7Body = $net7Body -replace 'precacheItem\("ppsh"\);', ('precacheItem("ppsh");' + [Environment]::NewLine + '    coop_precache_weapons();')
+$net7Body += @"
+
+coop_flag_sync()
+{
+    // EXPERIMENT (sending is off unless the console variable coop_flags is "on"; receiving is always on): mission flags (level.flag[name], set by flag_set in maps/_utility.gsc,
+    // which this mod patches to call coop_flag_local) are mirrored to the partner. This thread sets the flags the partner reported.
+    // A flag that was cleared locally after being set is a toggle: never set from outside.
+    while (!isdefined(level.player))
+        wait 0.1;
+    if (!isdefined(level.coop_flr))
+        level.coop_flr = [];
+    if (!isdefined(level.coop_flbad))
+        level.coop_flbad = [];
+    pend = [];
+    pendt = [];
+    for (;;)
+    {
+        wait 0.25;
+        // receiving is always on: flags only arrive when the partner has coop_flags "on" (sending is what the setting controls)
+        n = coop_pop_flag();
+        while (n != "")
+        {
+            pend[pend.size] = n;
+            pendt[pendt.size] = gettime();
+            n = coop_pop_flag();
+        }
+        np = [];
+        npt = [];
+        for (j = 0; j < pend.size; j++)
+        {
+            pn = pend[j];
+            keep = 0;
+            if (isdefined(level.flag) && isdefined(level.flag[pn]) && !isdefined(level.coop_flbad[pn]))
+            {
+                if (!level.flag[pn])
+                {
+                    level.coop_flr[pn] = 1;
+                    level.flag[pn] = true;
+                    level notify(pn);
+                    coop_flag_applied(pn);
+                }
+            }
+            else if (gettime() - pendt[j] < 60000)
+                keep = 1;
+            if (keep)
+            {
+                np[np.size] = pn;
+                npt[npt.size] = pendt[j];
+            }
+        }
+        pend = np;
+        pendt = npt;
+    }
+}
+
+coop_health_hud()
+{
+    // the partner's state is shown by the HUD menu next to the compass (tools/patch_menu.py patches ui/hud.menu): it reads these dvars,
+    // so it hides and shows together with the compass
+    setcvar("coop_partner_on", "0");
+    setcvar("coop_partner_low", "0");
+    setcvar("coop_partner", "");
+    lastseq = -1;
+    lastt = 0;
+    shown = 0;
+    lasthp = -1;
+    for (;;)
+    {
+        wait 0.1;
+        // the partner died: the survivor dies too, so the engine itself shows the original death screen and then reloads the checkpoint (both PCs hold
+        // the host's checkpoint in every file it may load). The death is marked as induced: it is not reported back to the partner.
+        if (coop_pop_peer_death())
+        {
+            level.coop_induced = 1;
+            for (kt = 0; kt < 6; kt++)
+            {
+                if (isdefined(level.player.health) && level.player.health > 0)
+                    level.player doDamage(level.player.health + 1000, level.player.origin);
+                wait 0.5;
+                if (!isdefined(level.player.health) || level.player.health <= 0)
+                    break;
+            }
+            if (!isdefined(level.player.health) || level.player.health <= 0)
+                coop_death_started();
+        }
+        sq = coop_peer_seq();
+        if (sq != lastseq)
+        {
+            lastseq = sq;
+            lastt = gettime();
+        }
+        // hidden at once while the local player is dead (the compass goes with the death screen) and 2 s after the partner's packets stop
+        ownhp = level.player.health;
+        if (!isdefined(ownhp))
+            ownhp = 1;
+        if (ownhp <= 0 || gettime() - lastt > 2000)
+        {
+            if (shown)
+            {
+                setcvar("coop_partner_on", "0");
+                shown = 0;
+            }
+            continue;
+        }
+        hp = coop_peer_health();
+        if (hp != lasthp)
+        {
+            lasthp = hp;
+            setcvar("coop_partner", hp + "%");
+            if (hp <= 30)
+                setcvar("coop_partner_low", "1");
+            else
+                setcvar("coop_partner_low", "0");
+        }
+        if (!shown)
+        {
+            setcvar("coop_partner_on", "1");
+            shown = 1;
+        }
+    }
+}
+
+coop_level_watch()
+{
+    for (;;)
+    {
+        wait 0.5;
+        s = coop_pending_level();
+        if (s != "")
+            changelevel(s, false);
+    }
+}
+
+coop_enemy_watch()
+{
+    while (!isdefined(level.player))
+        wait 0.1;
+    ents = [];
+    poss = [];
+    for (;;)
+    {
+        wait 0.25;
+        ne = [];
+        np = [];
+        for (i = 0; i < ents.size; i++)
+        {
+            e = ents[i];
+            if (isdefined(e) && isalive(e))
+            {
+                ne[ne.size] = e;
+                np[np.size] = e.origin;
+            }
+            else if (isdefined(e))
+            {
+                if (!isdefined(e.coop_remote))
+                    coop_send_kill(poss[i]);
+            }
+        }
+        ents = ne;
+        poss = np;
+        ai = getaiarray("axis");
+        for (i = 0; i < ai.size; i++)
+        {
+            if (!isdefined(ai[i].coop_tracked))
+            {
+                ai[i].coop_tracked = true;
+                ents[ents.size] = ai[i];
+                poss[poss.size] = ai[i].origin;
+            }
+        }
+    }
+}
+
+coop_kill_recv()
+{
+    while (!isdefined(level.player))
+        wait 0.1;
+    for (;;)
+    {
+        wait 0.1;
+        n = coop_kill_count();
+        while (n > 0)
+        {
+            v = coop_pop_kill();
+            n = n - 1;
+            radius = 220;
+            test = 0;
+            if (v[0] == 0 && v[1] == 0 && v[2] == 0)
+            {
+                v = level.player.origin;
+                radius = 2500;
+                test = 1;
+            }
+            if (coop_peer_solo() && !test)
+                continue;
+            best = undefined;
+            bd = radius;
+            ai = getaiarray("axis");
+            for (i = 0; i < ai.size; i++)
+            {
+                d = distance(ai[i].origin, v);
+                if (d < bd)
+                {
+                    bd = d;
+                    best = ai[i];
+                }
+            }
+            if (isdefined(best))
+            {
+                best.coop_remote = true;
+                best dodamage(best.health + 500, v);
+            }
+        }
+    }
+}
+"@
+# heartbeat: the bridge sends a packet every 40 ms even when the peer stands still, so coop_peer_seq() not changing for 5 s means the link is
+# gone: the puppet is hidden (reversible, no respawn) and shown again when packets return
+$net7Body = $net7Body -replace '(?m)^(\s*)(lastx = rx;)(\r?\n\s*lasty = ry;\r?\n\s*still = 0;\r?\n\s*i = 0;)', "`$1lastsq = coop_peer_seq();`n`$1quiet = 0;`n`$1hidden = 0;`n`$1`$2`$3"
+$net7Body = $net7Body -replace '(?m)^(\s*)ry = pv\[1\];(\r?\n\s*\r?\n\s*if \(rx != lastx)', "`$1ry = pv[1];`n`$1sq = coop_peer_seq();`n`$1if (sq != lastsq)`n`$1{`n`$1    lastsq = sq;`n`$1    quiet = 0;`n`$1    if (hidden)`n`$1    {`n`$1        puppet show();`n`$1        hidden = 0;`n`$1        iprintln(`"COOPN peer is back`");`n`$1    }`n`$1}`n`$1else`n`$1{`n`$1    quiet = quiet + 1;`n`$1    if (quiet == 100 && !hidden)`n`$1    {`n`$1        puppet hide();`n`$1        hidden = 1;`n`$1        iprintln(`"COOPN peer lost`");`n`$1    }`n`$1}`$2"
+
+$net7Body = $net7Body -replace 'lastsq = coop_peer_seq\(\);', "lastsq = coop_peer_seq();`n    lastst = 0;"
+$net7Body = $net7Body -replace 'if \(rx != lastx \|\| ry != lasty\)', "pst = coop_peer_stance();`n        go = 0;`n        if (rx != lastx || ry != lasty || pst >= 3 || lastst >= 3)`n            go = 1;`n        lastst = pst;`n        if (go)"
+
+$coop = if ($Probe -eq 'puppet') { $puppetBody }
+        elseif ($Probe -eq 'follow') { $followBody }
+        elseif ($Probe -eq 'char') { $charBody }
+        elseif ($Probe -eq 'net') { $netBody }
+        elseif ($Probe -eq 'net2') { $net2Body }
+        elseif ($Probe -eq 'net3') { $net3Body }
+        elseif ($Probe -eq 'net4') { $net4Body }
+        elseif ($Probe -eq 'net5') { $net5Body }
+        elseif ($Probe -eq 'net6') { $net6Body }
+        elseif ($Probe -eq 'net7') { $net7Body }
+        else { $probeBody }
+Write-Host "probe variant: $Probe"
+
+$final = $patched + $coop
+
+# every playable single-player level (not movies, slideshows, credits)
+$allLevels = @('88ridge','beltot','bergstein','breakout','cityhall','crossroads','decoytown','decoytrenches','demolition','downtown_assault','downtown_sniper','duhoc_assault','duhoc_defend','elalamein','eldaba','hill400_assault','hill400_defend','libya','matmata','moscow','newvillers','rhine','silotown_assault','tankhunt','toujane','toujane_ride','trainyard')
+if ($Levels -contains 'all') { $Levels = $allLevels }
+$entries = [ordered]@{}
+$entries[$Level] = $final
+foreach ($lv in $Levels) {
+    if ($lv -eq $Level) { continue }
+    $o = Get-FromIwd $GameDir "maps/$lv.gsc"
+    $m = [regex]::Match($o, '(?m)^main\s*\(\s*\)')
+    if (-not $m.Success) { Write-Warning "no main() in $lv.gsc: skipped"; continue }
+    $entries[$lv] = $o.Remove($m.Index, $m.Length).Insert($m.Index, 'coop_orig_main()') + $coop
+}
+# the stock maps/_utility.gsc with two hooks: flag_set reports a new flag to the partner (coop_flag_local), flag_clear marks it as a toggle
+$util = Get-FromIwd $GameDir "maps/_utility.gsc"
+$um = [regex]::Match($util, '(?s)flag_set\s*\(msg\)\s*\{\s*level\.flag\[msg\]\s*=\s*true;\s*level notify\s*\(msg\);')
+$uc = [regex]::Match($util, '(?s)flag_clear\s*\(msg\)\s*\{\s*level\.flag\[msg\]\s*=\s*false;\s*level notify\s*\(msg\);')
+if ($um.Success -and $uc.Success) {
+    $util = $util.Insert($uc.Index + $uc.Length, "`n`tcoop_flag_cleared(msg);")
+    $util = $util.Insert($um.Index + $um.Length, "`n`tcoop_flag_local(msg);")
+    $util += @"
+
+coop_flag_local(msg)
+{
+	if (getcvar("coop_flags") != "on")
+		return;
+	if (isdefined(level.coop_flr) && isdefined(level.coop_flr[msg]))
+		return;
+	if (isdefined(level.coop_flbad) && isdefined(level.coop_flbad[msg]))
+		return;
+	coop_send_flag(msg);
+}
+
+coop_flag_cleared(msg)
+{
+	if (!isdefined(level.coop_flbad))
+		level.coop_flbad = [];
+	level.coop_flbad[msg] = 1;
+}
+"@
+    $entries['_utility'] = $util
+} else { Write-Warning "maps/_utility.gsc: flag_set / flag_clear not found, the flag mirror has no sender" }
+Write-Host ("levels in the mod: " + ($entries.Keys -join ' '))
+
+$modDir = Join-Path $TestDir 'mods\coop'
+New-Item -ItemType Directory -Force -Path $modDir | Out-Null
+$iwdPath = Join-Path $modDir "z_coop$Suffix.iwd"
+if (Test-Path $iwdPath) { Remove-Item $iwdPath -Force }
+
+# Two delivery options, same payload:
+#   1. mods\coop\z_coop.iwd  + `+set fs_game mods/coop`   (needs launch arguments)
+#   2. main\zz_coop.iwd       - an archive loaded after the stock iw_*.iwd, so its
+#      maps/<level>.gsc overrides the stock one with no cvars and no arguments at all.
+#      The game sorts main\*.iwd by name, so "zz_" must stay last alphabetically.
+function Write-Iwd([string]$path, $entries) {
+    $zip = [IO.Compression.ZipFile]::Open($path, [IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($k in $entries.Keys) {
+            $entry = $zip.CreateEntry("maps/$k.gsc", [IO.Compression.CompressionLevel]::Optimal)
+            $s = $entry.Open()
+            $w = New-Object IO.StreamWriter($s, (New-Object Text.UTF8Encoding($false)))
+            $w.Write($entries[$k]); $w.Flush(); $w.Close()
+        }
+        # extra files (the in-game menu: ui/main.menu, ui/menus.txt, ui/coop.menu), stored at their relative path
+        if ($script:ExtraDir) {
+            Get-ChildItem $script:ExtraDir -Recurse -File | ForEach-Object {
+                $rel = $_.FullName.Substring($script:ExtraDir.Length).TrimStart('\') -replace '\\', '/'
+                $x = $zip.CreateEntry($rel, [IO.Compression.CompressionLevel]::Optimal)
+                $xs = $x.Open()
+                $bytes = [IO.File]::ReadAllBytes($_.FullName)
+                $xs.Write($bytes, 0, $bytes.Length); $xs.Close()
+            }
+        }
+    } finally { $zip.Dispose() }
+}
+
+# net5 (the release) carries the in-game Co-op menu: the CO-OP button in the main menu and its screen, patched from
+# the game's own menu files by tools\patch_menu.py (every anchor asserted: a changed stock file fails the build)
+$script:ExtraDir = $null
+if ($Probe -eq 'net5' -or $Probe -eq 'net6' -or $Probe -eq 'net7') {
+    $menuOut = Join-Path $env:TEMP ("cod2coop-menu-" + [Guid]::NewGuid().ToString('N'))
+    $pmArgs = @(); if ($MainMenuOnly) { $pmArgs += '--mainonly' }
+    . (Join-Path $PSScriptRoot 'patch_menu.ps1')
+    Invoke-PatchMenu -Game $GameDir -Out $menuOut -MainOnly ([bool]$MainMenuOnly)
+    # the CO-OP screen texts are NOT in this archive: main\zz_coop_lang.iwd carries the file of the game's language (tools\make_lang_iwd.py)
+    if (-not $Install) { python -I (Join-Path $PSScriptRoot 'make_lang_iwd.py') $GameDir $TestDir }   # the installer writes the language archive itself
+    # the own animation tree of the puppet (stock xanim clips, our own list: prone, crawl, rechamber, jump ... inside the engine's limit of 32 top-level nodes)
+    New-Item -ItemType Directory -Force -Path (Join-Path $menuOut 'animtrees') | Out-Null
+    Copy-Item (Join-Path $PSScriptRoot 'animtrees\coop_puppet.atr') (Join-Path $menuOut 'animtrees\coop_puppet.atr')
+    $script:ExtraDir = $menuOut
+}
+
+Write-Iwd $iwdPath $entries
+
+$mainIwd = Join-Path $TestDir "main\zz_coop$Suffix.iwd"
+New-Item -ItemType Directory -Force -Path (Split-Path $mainIwd) | Out-Null   # the installer builds into a fresh folder
+if (Test-Path $mainIwd) {
+    try { Remove-Item $mainIwd -Force }
+    catch { Write-Warning "cannot replace $mainIwd (the game holds it open); build with a new -Suffix instead" }
+}
+Write-Iwd $mainIwd $entries
+if ($script:ExtraDir) { Remove-Item $script:ExtraDir -Recurse -Force -ErrorAction SilentlyContinue }   # the scratch menu files
+
+$sha = (Get-FileHash $iwdPath -Algorithm SHA256).Hash
+Write-Host "mod iwd: $iwdPath"
+Write-Host "size:    $((Get-Item $iwdPath).Length) bytes"
+Write-Host "sha256:  $sha"
+Write-Host "game:    $((Get-FileHash (Join-Path $GameDir 'CoD2SP_s.exe') -Algorithm SHA256).Hash)"
+
+# steam_appid.txt lets the CEG wrapper accept a start outside the Steam client.
+Set-Content -Path (Join-Path $TestDir 'steam_appid.txt') -Value '2630' -Encoding ASCII
+Write-Host "steam_appid.txt written"

@@ -1,0 +1,54 @@
+name: Bug report / Сообщение о проблеме
+description: Something does not work or works wrong / Что-то не работает или работает неправильно
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please attach the archive made by `CoD2Coop.exe logs` (`CoD2Coop-logs-*.zip`). For connection problems logs from **both PCs** are needed.
+        Приложите архив из `CoD2Coop.exe logs` (`CoD2Coop-logs-*.zip`). Для проблем со связью нужны логи **с обоих ПК**.
+  - type: input
+    id: version
+    attributes:
+      label: Mod version / Версия мода
+      placeholder: 0.7.4
+    validations: { required: true }
+  - type: dropdown
+    id: role
+    attributes:
+      label: Role / Роль
+      options: [Host / Хост, Guest / Гость, Both PCs / Оба ПК, Could not connect / Не подключился]
+    validations: { required: true }
+  - type: input
+    id: mission
+    attributes:
+      label: Mission and difficulty / Миссия и сложность
+      placeholder: libya, veteran
+  - type: textarea
+    id: steps
+    attributes:
+      label: What you did / Что делали
+      placeholder: "1. Host pressed HOST... 2. Guest pressed JOIN..."
+    validations: { required: true }
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected and what happened / Что ожидали и что получилось
+    validations: { required: true }
+  - type: input
+    id: when
+    attributes:
+      label: Time (HH:MM) and what was on the screen / Время (ЧЧ:ММ) и что было на экране
+  - type: checkboxes
+    id: attached
+    attributes:
+      label: Attached / Что приложено
+      options:
+        - label: logs zip from the host / логи с хоста
+        - label: logs zip from the guest / логи с гостя
+        - label: screenshot / скриншот
+  - type: input
+    id: system
+    attributes:
+      label: Windows and game build / Windows и сборка игры
+      placeholder: Windows 11 23H2, Steam build (or retail 1.3)

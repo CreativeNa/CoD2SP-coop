@@ -1,0 +1,65 @@
+combat_directions
+{
+	combat_up
+	{
+		stand_aim_up
+		stand_aim2shoot_up
+		stand_shoot_up
+		stand_shoot_auto_up
+
+		crouch_aim_up
+		crouch_aim2shoot_up
+		crouch_shoot_up
+		crouch_shoot_auto_up
+	}
+
+	combat_straight
+	{
+		stand_aim_straight
+		stand_aim2shoot_straight
+		stand_shoot_straight
+		stand_shoot_auto_straight
+
+		crouch_aim_straight
+		crouch_aim2shoot_straight
+		crouch_shoot_straight
+		crouch_shoot_auto_straight
+	}
+
+	combat_down
+	{
+		stand_aim_down
+		stand_aim2shoot_down
+		stand_shoot_down
+		stand_shoot_auto_down
+
+		crouch_aim_down
+		crouch_aim2shoot_down
+		crouch_shoot_down
+		crouch_shoot_auto_down
+	}
+}
+
+stand_rechamber
+crouch_rechamber
+reload_stand_rifle
+reload_crouch_rifle
+drone_run_forward_1
+jump_across_100
+jump_down_56
+stand_alert_1
+stand_alert_2
+stand_alert_3
+prone_aim_idle
+prone_crawl
+crouchrun_loop_forward_1
+duhoc_climber_dismount
+prone_shoot_straight
+prone_shoot_auto_straight
+stand_grenade_throw
+crouch_grenade_throw
+standunarmed_idle_loop
+unarmed_run_russian
+unarmed_crouch_idle1
+wounded_crawlidle
+crouchwalk_loop
