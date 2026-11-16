@@ -65,7 +65,4 @@ wounded_crawlidle
 crouchwalk_loop
 pt_stand_alert_pistol
 combat_run_fast_pistol
-pt_crouch_shoot_pistol
-pt_prone_shoot_pistol
 pt_reload_stand_pistol
-pt_reload_crouch_pistol

@@ -108,6 +108,7 @@ static volatile LONG g_enabled = 0;          // 1 once a mode is active: the UDP
 static volatile LONG g_mode = 0;             // 0 off, 1 host, 2 join (menu mode)
 static int g_fileMode = 0;                   // 1 when coop_port.txt / coop_peer.txt exist at load (the launcher path)
 static volatile LONG g_discover = 0;         // 1 while a guest in "auto" mode is waiting for a host beacon
+#define LOOPBACK_OK 0                         /* a peer must be another PC */
 static char g_lastHost[64];                  // the host that last answered us (coop_lasthost.txt): the fallback of "auto"
 
 // ---- live reload: the d3d9 proxy can stop this copy (CoopStop), free it and load a newer file without a game restart ----
@@ -156,6 +157,7 @@ static void ReadLastHost(void) {
     FILE* f = fopen(p0, "r");
     if (!f) return;
     if (fscanf(f, "%63s", g_lastHost) != 1) g_lastHost[0] = 0;
+    if (!LOOPBACK_OK && !strncmp(g_lastHost, "127.", 4)) g_lastHost[0] = 0;
     fclose(f);
 }
 static void WriteLastHost(const char* ip) {
@@ -470,6 +472,7 @@ static void MenuEnable(int mode) {
 
 // Join a host whose address is known. keepDiscover: the last-host fallback keeps listening for a real beacon.
 static void SetPeerJoin(const char* ip, int keepDiscover) {
+    if (!LOOPBACK_OK && !strncmp(ip, "127.", 4)) { LOGF("menu: JOIN %s refused: enter the address of the other PC (or 'auto')", ip); return; }
     strncpy(g_peerIp, ip, sizeof g_peerIp - 1); g_peerIp[sizeof g_peerIp - 1] = 0;
     g_peerAuto = 0; g_peerAddr = inet_addr(ip); g_peerKnown = 1;
     g_peerPort = MENU_PORT; g_logPort = MENU_LOGPORT;
@@ -493,12 +496,10 @@ static void ApplyMode(int mode, const char* ip) {
             strcpy(g_peerIp, "(auto: waiting for a host beacon)");
             g_peerAuto = 0; g_peerKnown = 0; g_peerPort = MENU_PORT; g_logPort = 0;
             OpenLogSink(NULL, 0);
-            int wasHost = (g_mode == 1) || !strcmp(g_lastHost, "127.0.0.1");                 // this very game was the host a moment ago (solo test): it is the host to join
             g_discover = 1;
             MenuEnable(2);
             LOGF("menu: JOIN auto - looking for a host on the network (beacons on UDP %d)%s%s", BEACON_PORT,
                  g_lastHost[0] ? "; fallback after 10 s: the last host " : "", g_lastHost);
-            if (wasHost) { LOGF("menu: JOIN auto: this game was the host / the last host is 127.0.0.1 (solo test): joining 127.0.0.1 now (a real beacon still wins)"); SetPeerJoin("127.0.0.1", 1); }
             return;
         }
         if (!ValidIPv4(ip)) { LOGF("menu: JOIN needs 'auto' or a valid IPv4 address of the host (a.b.c.d), got '%s'", ip); return; }
@@ -597,7 +598,7 @@ static DWORD WINAPI DISC(LPVOID p) {
                 SetPeerJoin(ipstr, 0);          // clears g_discover: the loop ends
                 break;
             }
-            if (!fb && g_lastHost[0] && ValidIPv4(g_lastHost) && GetTickCount() - t0 > 10000) {
+            if (!fb && g_lastHost[0] && ValidIPv4(g_lastHost) && (LOOPBACK_OK || strncmp(g_lastHost, "127.", 4)) && GetTickCount() - t0 > 10000) {
                 fb = 1;
                 LOGF("discovery: no beacon for 10 s; trying the last host %s (still listening for a beacon)", g_lastHost);
                 SetPeerJoin(g_lastHost, 1);
@@ -622,7 +623,8 @@ static DWORD WINAPI UDP(LPVOID p) {
     a.sin_family = AF_INET; a.sin_port = htons(port);
     // loopback unless the peer is on another machine (then the packets arrive from the LAN).
     // The listener only parses numbers into cvar strings; it is still reachable from the LAN while open.
-    int lan = g_hasPeer && strncmp(g_peerIp, "127.", 4) != 0;
+    // ALWAYS all interfaces: a socket bound to loopback cannot send to any other address (WSAENETUNREACH), so the peer may change at any time.
+    int lan = 1;
     a.sin_addr.s_addr = htonl(lan ? INADDR_ANY : INADDR_LOOPBACK);
     LOGF("listen on %s", lan ? "all interfaces (peer is remote)" : "loopback");
     if (bind(s, (struct sockaddr*)&a, sizeof a) == SOCKET_ERROR) {
@@ -1794,7 +1796,7 @@ static DWORD WINAPI WIN(LPVOID p) {
         if (g_mode == 2 && g_peerKnown && g_txn == 0 && g_udpSock != INVALID_SOCKET && tick % 9 == 0) {   /* guest, no mission yet: tell the host we are here */
             struct sockaddr_in to; memset(&to, 0, sizeof to);
             to.sin_family = AF_INET; to.sin_addr.s_addr = g_peerAddr; to.sin_port = htons((u_short)g_peerPort);
-            sendto(g_udpSock, "H 1", 3, 0, (struct sockaddr*)&to, sizeof to);
+            if (sendto(g_udpSock, "H 1", 3, 0, (struct sockaddr*)&to, sizeof to) < 0) { static DWORD lastSE; if (GetTickCount() - lastSE > 5000) { lastSE = GetTickCount(); LOGF("send to the host FAILED, error %d", WSAGetLastError()); } }
         }
         BarrierTick();
         MissionFollow(tick);

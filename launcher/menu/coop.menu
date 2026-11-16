@@ -60,22 +60,6 @@
 
 		itemDef
 		{
-			name verline
-			type ITEM_TYPE_TEXT
-			style 0
-			text "__COOPVER__"
-			textscale .22
-			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 590 470 155 12
-			textalign 2
-			textalignx 155
-			textaligny 8
-			decoration
-			forecolor .75 .75 .7 1
-			visible 1
-		}
-		itemDef
-		{
 			name goldline
 			style WINDOW_STYLE_SHADER
 			rect 10 46 620 6

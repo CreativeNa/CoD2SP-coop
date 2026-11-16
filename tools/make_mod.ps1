@@ -1491,10 +1491,7 @@ coop_pose_move()
                 // prone: no reload clip (the standing one would make the puppet get up); it stays in its prone pose
                 if (coop_peer_stance() == 1)
                 {
-                    if (ps)
-                        self setflaggedanimknobrestart("coop_pose", %pt_reload_crouch_pistol, 1, 0.1, 1);
-                    else
-                        self setflaggedanimknobrestart("coop_pose", %reload_crouch_rifle, 1, 0.1, 1);
+                    self setflaggedanimknobrestart("coop_pose", %reload_crouch_rifle, 1, 0.1, 1);
                     t = int(getanimlength(%reload_crouch_rifle) * 1000);
                 }
                 else if (coop_peer_stance() != 2)
@@ -1574,8 +1571,6 @@ coop_pose_move()
                     self setflaggedanimknobrestart("coop_pose", %prone_crawl, 1, 0.2, 1);
                 else if (un)
                     self setflaggedanimknobrestart("coop_pose", %wounded_crawlidle, 1, 0.2, 1);
-                else if (ps)
-                    self setflaggedanimknobrestart("coop_pose", %pt_prone_shoot_pistol, 1, 0.2, 1);
                 else
                     self setflaggedanimknobrestart("coop_pose", %prone_aim_idle, 1, 0.2, 1);
             }
@@ -1588,8 +1583,6 @@ coop_pose_move()
                 }
                 else if (un)
                     self setflaggedanimknobrestart("coop_pose", %unarmed_crouch_idle1, 1, 0.2, 1);
-                else if (ps)
-                    self setflaggedanimknobrestart("coop_pose", %pt_crouch_shoot_pistol, 1, 0.2, 1);
                 else
                     self setflaggedanimknobrestart("coop_pose", %crouch_shoot_straight, 1, 0.2, 1);
             }
