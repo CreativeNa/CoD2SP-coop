@@ -19,10 +19,10 @@ makes missions load a little faster.
 
 | File | SHA-256 |
 |---|---|
-| `CoD2Coop-0.7.7.zip` | `9ef7cf32a25110b7a257b9fe9f7bd4493cb051f8b2046bb0cab53a9eed157c3b` |
-| `CoD2Coop.exe` | `79f07f38e5b7d61f10302659f136a427b3bd8ac42faec0f65fb492dac95184d9` |
-| `d3d9.dll` (written into the game folder) | `864c9803da56d019946c753e689eae81599fd79bd0fb3b648ef5b04d83e2e887` |
-| `cod2net5.dll` (written into the game folder) | `88fee3705bee78751f2e8bcad104b38ccd7004f8dbc6e31a7ec42b282b0d5263` |
+| `CoD2Coop-0.7.7.zip` | `fc575a6fddb3866c898eea204c93ae02f47356d9e3a8c42ff31518a952775e0e` |
+| `CoD2Coop.exe` | `188e58528cd485c056d136850fdcb97cfc3c2b942f24890564a80b18d9e6248a` |
+| `d3d9.dll` (written into the game folder) | `bdb3621fed74e983230ee8b42c63e698834ba56a531c121f7ecd3184ddc36b64` |
+| `cod2net5.dll` (written into the game folder) | `c01179ebb3ddbaba4cdc0097da24ef82b042a4b1e331c0ab14c8fc029259eb37` |
 
 Check: `Get-FileHash <file> -Algorithm SHA256` in PowerShell. To remove everything: `CoD2Coop.exe` → **Uninstall**.
 

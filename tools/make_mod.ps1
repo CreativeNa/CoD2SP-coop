@@ -1531,7 +1531,7 @@ coop_pose_move()
         key = st * 2 + mv;
         // no weapon in the partner's hands (his weapon id stays 0): the unarmed idle and run clips instead of the rifle-ready pose
         un = 0;
-        if (lastw == 0 || getcvarint("coop_un") == 1)       // coop_un 1: a test switch (the partner is shown unarmed)
+        if (lastw == 0)
             un = 1;
         // pistols hold a different pose in every stance: idle, run, crouch, prone, crawl and the reload are all
         // separate clips in the game, so the puppet has to use them instead of the rifle set
@@ -1885,7 +1885,7 @@ $net7Body += @"
 
 coop_flag_sync()
 {
-    // EXPERIMENT (sending is off unless the console variable coop_flags is "on"; receiving is always on): mission flags (level.flag[name], set by flag_set in maps/_utility.gsc,
+    // Mission flags (sending is on unless the console variable coop_flags is "off"; receiving is always on): (level.flag[name], set by flag_set in maps/_utility.gsc,
     // which this mod patches to call coop_flag_local) are mirrored to the partner. This thread sets the flags the partner reported.
     // A flag that was cleared locally after being set is a toggle: never set from outside.
     while (!isdefined(level.player))
@@ -1899,7 +1899,7 @@ coop_flag_sync()
     for (;;)
     {
         wait 0.25;
-        // receiving is always on: flags only arrive when the partner has coop_flags "on" (sending is what the setting controls)
+        // receiving is always on: flags only arrive when the partner sends them (coop_flags "off" there stops the sending)
         n = coop_pop_flag();
         while (n != "")
         {
@@ -2157,7 +2157,7 @@ if ($um.Success -and $uc.Success) {
 
 coop_flag_local(msg)
 {
-	if (getcvar("coop_flags") != "on")
+	if (getcvar("coop_flags") == "off")
 		return;
 	if (isdefined(level.coop_flr) && isdefined(level.coop_flr[msg]))
 		return;

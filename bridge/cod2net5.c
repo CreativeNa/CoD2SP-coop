@@ -1234,12 +1234,55 @@ static void MissionFollow(int tick) {
     }
 }
 
+/* Ctrl+V in the CO-OP screen: the engine's edit field cannot paste. While the game window has the focus and Ctrl+V goes down, a clipboard text that is
+   exactly an IPv4 address (spaces and line breaks around it are ignored) is written into the dvar coop_ip by the console command  set coop_ip "a.b.c.d"
+   (the dvar exists once the CO-OP screen has been opened; elsewhere the key does nothing). The command is queued ~120 ms after the key so that it
+   comes after the 'v' the edit field may have typed itself. */
+static void PasteIpPoll(void) {
+    static int wasDown = 0; static char pend[24]; static DWORD pendAt = 0;
+    int down = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState('V') & 0x8000);
+    if (down && !wasDown) {
+        wasDown = 1;
+        HWND fg = GetForegroundWindow(); DWORD pid = 0;
+        if (fg) GetWindowThreadProcessId(fg, &pid);
+        if (pid == GetCurrentProcessId() && FastDvar("coop_ip") && OpenClipboard(NULL)) {
+            HANDLE h = GetClipboardData(CF_TEXT);
+            if (h) {
+                const char* s = (const char*)GlobalLock(h);
+                if (s) {
+                    char t[256]; size_t n = 0;
+                    while (*s && n < sizeof t - 1) t[n++] = *s++;
+                    t[n] = 0;
+                    GlobalUnlock(h);
+                    /* the first run of digits and dots that is a valid IPv4 address: "26.1.2.3", "26.1.2.3:27201", "Host IP: 26.1.2.3" all work */
+                    char found[24]; found[0] = 0; size_t i = 0, tl = strlen(t);
+                    while (i < tl && !found[0]) {
+                        if (!((t[i] >= '0' && t[i] <= '9') || t[i] == '.')) { i++; continue; }
+                        size_t j = i; while (j < tl && ((t[j] >= '0' && t[j] <= '9') || t[j] == '.')) j++;
+                        size_t b = i, e = j; while (b < e && t[b] == '.') b++; while (e > b && t[e - 1] == '.') e--;
+                        if (e > b && e - b < sizeof found) { memcpy(found, t + b, e - b); found[e - b] = 0; if (!ValidIPv4(found)) found[0] = 0; }
+                        i = j;
+                    }
+                    if (found[0]) { strncpy(pend, found, sizeof pend - 1); pend[sizeof pend - 1] = 0; pendAt = GetTickCount() + 120; if (!pendAt) pendAt = 1; }
+                    else LOGF("paste: no IPv4 address in the clipboard text (%d characters), ignored", (int)tl);
+                }
+            }
+            CloseClipboard();
+        }
+    } else if (!down) wasDown = 0;
+    if (pendAt && (LONG)(GetTickCount() - pendAt) >= 0) {
+        char cmd[64]; _snprintf(cmd, sizeof cmd - 1, "set coop_ip \"%s\"\n", pend); cmd[sizeof cmd - 1] = 0;
+        LOGF("paste: coop_ip <- %s (console command %s)", pend, CbufAdd(cmd) ? "queued" : "FAILED");
+        pendAt = 0;
+    }
+}
+
 static DWORD WINAPI CTRL(LPVOID p) {
     (void)p;
     char lastCmd[40] = "", lastIp[80] = "";
     DWORD cmdC = 0, ipC = 0;
     for (int tick = 0;; tick++) {
-        SleepQ(100);
+        for (int k = 0; k < 5; k++) { SleepQ(20); PasteIpPoll(); }   // 100 ms in all; the key is polled every 20 ms so a short Ctrl+V is not missed
         if (g_quit) return 0;
         if (g_fileMode) return 0;                       // the launcher's files drive this instance instead
         if (!cmdC || !ipC) {                            // the engine's own lookup first: instant, no memory scan
