@@ -37,7 +37,7 @@ At the start of every mission both PCs wait for each other (a small "Waiting for
 
 Position, stance, jumping, shooting and reloading (with flash), grenades and smoke, melee; kills of enemies; mission progress flags (optional);
 death of either player (both go back to the shared checkpoint); the player tank on the missions where you drive one (`libya`, `88ridge`);
-a health read-out of your partner next to the compass; **F8** teleports you to your partner.
+**F8** teleports you to your partner; **F7** (second player) takes the host's current checkpoint.
 
 ## Antivirus
 
@@ -113,7 +113,7 @@ trucks, planes and boats are not.
 
 Позиция, поза, прыжок, стрельба и перезарядка (со вспышкой), гранаты и дымовые, удар прикладом; убийства врагов; флаги заданий (по желанию);
 смерть любого игрока (оба возвращаются на общую контрольную точку); танк игрока на миссиях, где вы ведёте танк (`libya`, `88ridge`);
-здоровье напарника у компаса; **F8** переносит вас к напарнику.
+**F8** переносит вас к напарнику; **F7** (второй игрок) загружает текущую контрольную точку хоста.
 
 ## Антивирус
 

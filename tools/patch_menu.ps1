@@ -112,17 +112,19 @@ function Update-MainMenu([string]$t, [bool]$ingame) {
 }
 
 function Update-HudMenu([string]$t) {
+    # the partner label/value next to the compass is switched off for now (owner, 2026-11-17: remove it, add it back later): remove the next line to restore it
+    return $t
     $m = [regex]::Match($t, 'name\s+"Compass"')
     if (-not $m.Success) { throw 'menuDef "Compass" not found in ui/hud.menu' }
     $ms = $t.LastIndexOf('menuDef', $m.Index, [StringComparison]::Ordinal)
     $me = Get-BlockEnd $t $t.IndexOf('{', $ms)
     function Item([string]$name, [string]$extra, [string]$rect) {
-        return "`t`titemDef`n`t`t{`n`t`t`tname `"$name`"`n`t`t`trect $rect`n`t`t`ttextscale .32`n`t`t`ttextstyle ITEM_TEXTSTYLE_SHADOWED`n`t`t`ttextalign 2`n`t`t`ttextaligny 12`n`t`t`tdecoration`n`t`t`tvisible MENU_TRUE`n$extra`t`t}`n"
+        return "`t`titemDef`n`t`t{`n`t`t`tname `"$name`"`n`t`t`trect $rect`n`t`t`ttextscale .32`n`t`t`ttextstyle ITEM_TEXTSTYLE_SHADOWED`n`t`t`ttextalign 0`n`t`t`ttextalignx 0`n`t`t`ttextaligny 12`n`t`t`tdecoration`n`t`t`tvisible MENU_TRUE`n$extra`t`t}`n"
     }
     $on = "`t`t`tdvartest `"coop_partner_on`"`n`t`t`tshowdvar { `"1`" }`n"
-    $label = Item 'coop_partner_label' ("`t`t`ttext `"@COOP_PARTNER`"`n`t`t`tforecolor .85 .85 .85 1`n" + $on) '150 112 70 14'
-    $val = Item 'coop_partner_value' "`t`t`ttype ITEM_TYPE_TEXT`n`t`t`tdvar `"coop_partner`"`n`t`t`tforecolor 1 1 1 1`n`t`t`tdvartest `"coop_partner_low`"`n`t`t`tshowdvar { `"0`" }`n" '215 112 60 14'
-    $low = Item 'coop_partner_low' "`t`t`ttype ITEM_TYPE_TEXT`n`t`t`tdvar `"coop_partner`"`n`t`t`tforecolor 1 .3 .3 1`n`t`t`tdvartest `"coop_partner_low`"`n`t`t`tshowdvar { `"1`" }`n" '215 112 60 14'
+    $label = Item 'coop_partner_label' ("`t`t`ttext `"@COOP_PARTNER`"`n`t`t`tforecolor .85 .85 .85 1`n" + $on) '168 112 46 14'
+    $val = Item 'coop_partner_value' "`t`t`ttype ITEM_TYPE_TEXT`n`t`t`tdvar `"coop_partner`"`n`t`t`tforecolor 1 1 1 1`n`t`t`tdvartest `"coop_partner_low`"`n`t`t`tshowdvar { `"0`" }`n" '228 112 50 14'
+    $low = Item 'coop_partner_low' "`t`t`ttype ITEM_TYPE_TEXT`n`t`t`tdvar `"coop_partner`"`n`t`t`tforecolor 1 .3 .3 1`n`t`t`tdvartest `"coop_partner_low`"`n`t`t`tshowdvar { `"1`" }`n" '228 112 50 14'
     return $t.Substring(0, $me) + "`n" + $label + $val + $low + "`t" + $t.Substring($me)
 }
 

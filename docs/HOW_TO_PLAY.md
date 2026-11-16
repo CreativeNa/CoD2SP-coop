@@ -24,7 +24,7 @@
 **In the mission**
 
 - You see your partner as a soldier of your campaign: running, crouching, lying, jumping, shooting, reloading, throwing grenades.
-- **F8** teleports you to your partner. The partner's health is shown next to the compass.
+- **F8** teleports you to your partner. **F7** (second player): loads the host's latest checkpoint, so you catch up with the host's world.
 - If one player dies, both continue from the last shared checkpoint (**Mission: MANUAL** in the CO-OP screen turns this off).
 - On `libya` and `88ridge` each player drives a tank of his own; the guest is seated in a second tank automatically.
 
@@ -54,7 +54,7 @@ the language of the texts follows the game language (English, French, German, It
 **В миссии**
 
 - Напарник виден как солдат вашей кампании: бегает, приседает, ложится, прыгает, стреляет, перезаряжается, бросает гранаты.
-- **F8** переносит вас к напарнику. Здоровье напарника показано у компаса.
+- **F8** переносит вас к напарнику. **F7** (второй игрок): загружает последнюю контрольную точку хоста, чтобы догнать его мир.
 - Если погиб один игрок, оба продолжают с последней общей контрольной точки (кнопка **Mission: MANUAL** в экране CO-OP отключает это).
 - На `libya` и `88ridge` каждый ведёт свой танк; гостя сажает во второй танк автоматически.
 

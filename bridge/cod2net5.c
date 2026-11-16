@@ -54,6 +54,12 @@ static KillEv g_kIn[16]; static volatile LONG g_kInHead, g_kInTail;    /* receiv
 static volatile LONG g_kSeq;                                           /* our outgoing ids */
 static LONG g_kSeen[32]; static int g_kSeenN;                          /* ids already accepted (the sender sends each event twice) */
 /* mission flags of the peer ("F <name>"): a ring of names the script pops (coop_pop_flag) */
+/* replay of the host's flags: the host remembers every flag/trigger key it sent since its latest checkpoint; a guest that loads that checkpoint with F7 asks ("Q") and gets them again,
+   because the keys sent after the checkpoint died with the world the guest has just replaced */
+#define HF_MAX 160
+static char g_hostFlags[HF_MAX][40]; static volatile LONG g_hostFN = 0;
+static volatile LONG g_replayIdx = -1; static volatile DWORD g_replayNext = 0;   /* host: next key to re-send, and when */
+static volatile DWORD g_qAt[2] = {0, 0}; static DWORD g_f7Last = 0;               /* guest: when to ask the host to replay (twice) */
 static char g_flagQ[16][40];
 static volatile LONG g_flagHead = 0, g_flagTail = 0;
 typedef struct { char name[40]; float o[3]; float v[3]; } GrenEv;                       /* a thrown grenade of the peer: weapon, start OFFSET from the thrower, velocity */
@@ -729,10 +735,15 @@ static DWORD WINAPI UDP(LPVOID p) {
             }
             continue;
         }
+        if (!strncmp(b, "Q", 1) && (b[1] == 0 || b[1] == ' ') && g_mode == 1) {   // the guest took the host's checkpoint (F7): send the keys sent since it again
+            if (g_hostFN > 0) { g_replayNext = GetTickCount(); InterlockedExchange(&g_replayIdx, 0); LOGF("replay: the guest asked, re-sending %ld flag keys", (long)g_hostFN); }
+            else LOGF("replay: the guest asked, nothing to re-send");
+            continue;
+        }
         if (!strncmp(b, "F ", 2)) {      // a mission flag the peer's script set: "F <name>"
             char nm[40]; int n2 = 0;
             for (const char* q = b + 2; *q && n2 < 38; q++) {
-                if ((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') || (*q >= '0' && *q <= '9') || *q == '_') nm[n2++] = *q; else break;
+                if ((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') || (*q >= '0' && *q <= '9') || *q == '_' || *q == ' ') nm[n2++] = *q; else break;
             }
             nm[n2] = 0;
             if (n2 > 0) {
@@ -1199,6 +1210,7 @@ static void MissionFollow(int tick) {
                 _snprintf(why, sizeof why, "%s", cmd); why[sizeof why - 1] = 0;
                 strncat(cmd, "\n", sizeof cmd - strlen(cmd) - 1);
                 strncpy(g_deathLoadCmd, cmd, sizeof g_deathLoadCmd - 1); g_deathLoadCmd[sizeof g_deathLoadCmd - 1] = 0;
+                InterlockedExchange(&g_hostFN, 0); InterlockedExchange(&g_replayIdx, -1);   /* both worlds go back to the checkpoint: what was sent after it is undone */
                 g_deathLoadAt = GetTickCount() + 3500; if (!g_deathLoadAt) g_deathLoadAt = 1;   /* the explicit load of the shared checkpoint while the engine's own death screen is shown */
                 InterlockedExchange(&g_peerDeathFx, 1);
                 LOGF("follow: the peer died: the local player is killed by the script (the original death screen), the shared checkpoint is loaded by name in 3.5 s: %s", why);
@@ -1570,7 +1582,9 @@ static void SaveReceive(SOCKET c) {                    /* one incoming checkpoin
     while (got < sz) { int n = recv(c, buf + got, (int)(sz - got > 65536 ? 65536 : sz - got), 0); if (n <= 0) break; got += n; }
     if (got != sz) { LOGF("checkpoint %s: receive incomplete (%ld of %ld bytes)", nm, got, sz); free(buf); return; }
     char rmap[96]; int rn; CkptParse(nm, rmap, sizeof rmap, &rn);
-    if (g_curMap[0] && !strcmp(rmap, g_curMap) && rn < g_curN) {      /* older than what this PC already has for this map */
+    /* the guest takes EVERY checkpoint of the host: the "-N" counters of the two PCs are not comparable (the guest numbered its own saves 1..12 while the host was at 9 far ahead,
+       so the host's tankhunt-9 was thrown away and a death reloaded the guest's own early save) */
+    if (g_mode != 2 && g_curMap[0] && !strcmp(rmap, g_curMap) && rn < g_curN) {      /* older than what this PC already has for this map */
         LOGF("checkpoint %s ignored: older than %s-%d that this PC already has", nm, g_curMap, g_curN); free(buf); return;
     }
     unsigned long crc = Crc32Buf((const unsigned char*)buf, (size_t)sz);
@@ -1624,7 +1638,8 @@ static DWORD WINAPI SAVESYNC(LPVOID p) {
                 /* only the linked partner (or this PC itself in the solo test) may send a checkpoint: a file written into the save folder must never come from a stranger */
                 int fromPeer = g_peerKnown && ra.sin_addr.s_addr == g_peerAddr;
                 int fromSelf = ra.sin_addr.s_addr == htonl(INADDR_LOOPBACK);
-                if ((g_mode == 1 || g_mode == 2) && (fromPeer || fromSelf)) { u_long b = 0; ioctlsocket(c, FIONBIO, &b); SaveReceive(c); }
+                if (g_mode == 1 && fromPeer && !fromSelf) LOGF("checkpoint from the guest ignored (checkpoints are host-authoritative)");
+                else if ((g_mode == 1 || g_mode == 2) && (fromPeer || fromSelf)) { u_long b = 0; ioctlsocket(c, FIONBIO, &b); SaveReceive(c); }
                 else LOGF("checkpoint connection from %s refused (not the linked partner)", inet_ntoa(ra.sin_addr));
                 closesocket(c);
             }
@@ -1646,6 +1661,9 @@ static DWORD WINAPI SAVESYNC(LPVOID p) {
         FindClose(h);
         if (!bestName[0]) continue;
         if (!strcmp(bestName, lastName) && CompareFileTime(&bestTime, &lastTime) == 0) continue;     /* already handled */
+        /* checkpoints are HOST-authoritative: the guest never sends its own autosaves. With the trigger/flag mirror the guest's script autosaves at the guest's place
+           (e.g. its spawn) and that save used to replace the host's progress, so a death sent both PCs back to the start of the mission */
+        if (g_mode == 2 && !SoloMirror()) { strcpy(lastName, bestName); lastTime = bestTime; continue; }
         if (first) {                                                                                   /* at the link: only the HOST offers its newest, and only if it belongs to the running mission */
             first = 0;
             int send = 0; DWORD dm = FastDvar("mapname"); char mp[40] = "";
@@ -1670,6 +1688,7 @@ static DWORD WINAPI SAVESYNC(LPVOID p) {
         int okS = SaveSendBuf(nm, buf, sz);
         free(buf);
         LOGF("checkpoint sent: %s (%ld bytes) %s", nm, sz, okS ? "ok" : "FAILED (the other PC may be offline or its firewall blocks TCP 27203)");
+        if (okS && g_mode == 1) { InterlockedExchange(&g_hostFN, 0); InterlockedExchange(&g_replayIdx, -1); }   /* what was sent before is inside this checkpoint now */
         strncpy(g_curMap, smap, sizeof g_curMap - 1); g_curMap[sizeof g_curMap - 1] = 0; g_curN = sn;
         strncpy(g_curLoadName, nm, sizeof g_curLoadName - 1); g_curLoadName[sizeof g_curLoadName - 1] = 0;
         {   /* this PC reloads the same checkpoint after its own death: its per-map save gets it too */
@@ -1734,7 +1753,7 @@ static DWORD WINAPI WIN(LPVOID p) {
     FILE* mf = fopen(mpath, "r");
     if (mf) { char b[16] = ""; if (fgets(b, sizeof b, mf) && !_strnicmp(b, "on", 2)) strcpy(mwant, "on"); fclose(mf); }
     DWORD dv = 0, dst = 0, dmouse = 0, dfollow = 0;
-    int g_f8Down = 0;
+    int g_f8Down = 0, g_f7Down = 0;
     PrefsLoad();
     for (int tick = 0;; tick++) {
         SleepQ(100);
@@ -1745,6 +1764,56 @@ static DWORD WINAPI WIN(LPVOID p) {
             if (gw && GetForegroundWindow() == gw) { g_tpPending = 1; LOGF("teleport: F8 pressed, going to the partner"); }
             g_f8Down = 1;
         } else if (!(GetAsyncKeyState(VK_F8) & 0x8000)) g_f8Down = 0;
+        /* F7 (guest only): take the host's world. The host's latest checkpoint (coopshared.svg, written whenever the host autosaves) is loaded exactly as after a death:
+           the whole world, objectives and mission chapter of the host come over; the guest appears where the host saved. Only while the game window is in front. */
+        if ((GetAsyncKeyState(VK_F7) & 0x8000) && !g_f7Down) {
+            g_f7Down = 1;
+            HWND gw = NULL; EnumWindows(FindWnd, (LPARAM)&gw);
+            if (GetTickCount() - g_f7Last < 6000) { /* a load is under way: no second one (a held key repeated it every 0.2 s) */ }
+            else if (gw && GetForegroundWindow() == gw) {
+                int run = 0; DvarInt("sv_running", &run);
+                char base[MAX_PATH], cp[MAX_PATH];
+                if (g_mode != 2) LOGF("resync: F7 pressed, but this PC is not the guest: nothing to do");
+                else if (!run) LOGF("resync: F7 pressed, but no mission is running here");
+                else if (!SaveBase(base, sizeof base)) LOGF("resync: F7 pressed, the save folder is unknown");
+                else {
+                    _snprintf(cp, sizeof cp, "%ssave\\autosave\\coopshared.svg", base); cp[sizeof cp - 1] = 0;
+                    if (GetFileAttributesA(cp) == INVALID_FILE_ATTRIBUTES) LOGF("resync: F7 pressed, but the host has not sent a checkpoint yet");
+                    else {
+                        int q = CbufAdd("loadgame autosave/coopshared\n");
+                        LOGF("resync: F7 pressed, loading the host's latest checkpoint: %s", q ? "queued" : "FAILED");
+                        if (q) { g_f7Last = GetTickCount(); g_qAt[0] = g_f7Last + 8000; g_qAt[1] = g_f7Last + 16000; if (!g_qAt[0]) g_qAt[0] = 1; }
+                    }
+                }
+            }
+        } else if (!(GetAsyncKeyState(VK_F7) & 0x8000)) g_f7Down = 0;
+        for (int qi = 0; qi < 2; qi++) {                                  /* guest: after the load, ask the host to send the keys it sent after that checkpoint */
+            if (g_qAt[qi] && (LONG)(GetTickCount() - g_qAt[qi]) >= 0) {
+                g_qAt[qi] = 0;
+                if (g_peerKnown && g_udpSock != INVALID_SOCKET) {
+                    struct sockaddr_in to; memset(&to, 0, sizeof to);
+                    to.sin_family = AF_INET; to.sin_addr.s_addr = g_peerAddr; to.sin_port = htons((u_short)g_peerPort);
+                    sendto(g_udpSock, "Q", 1, 0, (struct sockaddr*)&to, sizeof to);
+                    sendto(g_udpSock, "Q", 1, 0, (struct sockaddr*)&to, sizeof to);
+                    LOGF("resync: asked the host to re-send the keys sent after its checkpoint");
+                }
+            }
+        }
+        if (g_mode == 1 && g_replayIdx >= 0 && (LONG)(GetTickCount() - g_replayNext) >= 0) {   /* host: re-send one key every 0.3 s (the script takes one per 0.25 s) */
+            LONG i = g_replayIdx;
+            if (i >= g_hostFN) InterlockedExchange(&g_replayIdx, -1);
+            else {
+                char pkt[64]; int len = _snprintf(pkt, sizeof pkt - 1, "F %s", g_hostFlags[i]);
+                if (len > 0 && g_peerKnown && g_udpSock != INVALID_SOCKET) {
+                    struct sockaddr_in to; memset(&to, 0, sizeof to);
+                    to.sin_family = AF_INET; to.sin_addr.s_addr = g_peerAddr; to.sin_port = htons((u_short)g_peerPort);
+                    sendto(g_udpSock, pkt, len, 0, (struct sockaddr*)&to, sizeof to);
+                    sendto(g_udpSock, pkt, len, 0, (struct sockaddr*)&to, sizeof to);
+                    LOGF("replay: flag re-sent: %s", g_hostFlags[i]);
+                }
+                InterlockedExchange(&g_replayIdx, i + 1); g_replayNext = GetTickCount() + 300;
+            }
+        }
         if (!dfollow) dfollow = FastDvar("coop_follow");
         if (dfollow) {
             char v[16]; CvPeek(dfollow, v, sizeof v);
@@ -2116,6 +2185,7 @@ static void __cdecl H_coop_tank_turret(void) { TankSt s = TankGet(); E_AddVector
 static void __cdecl H_coop_tank_fire(void)   { TankSt s = TankGet(); E_AddInt(s.fire); }       /* int coop_tank_fire(): the peer's shot counter */
 static void __cdecl H_coop_tank_age(void)    { TankSt s = TankGet(); E_AddInt(s.tick ? (int)(GetTickCount() - s.tick) : 999999); }   /* int coop_tank_age(): ms since the last report (999999 = never) */
 static void __cdecl H_coop_barrier_begin(void) {        /* coop_barrier_begin(map, skill, delaySeconds): hold the game (console command "pause") until the partner is ready in the same mission, 20 s at most */
+    InterlockedExchange(&g_hostFN, 0); InterlockedExchange(&g_replayIdx, -1);   /* a new mission: nothing to replay from the old one */
     int count = *(volatile int*)(ULONG_PTR)E_PARAMCOUNT;
     char mp[48];
     if (count < 3 || !E_GetStringCopy(0, mp, sizeof mp)) return;
@@ -2162,9 +2232,13 @@ static void __cdecl H_coop_send_flag(void) {            /* coop_send_flag(name):
     int count = *(volatile int*)(ULONG_PTR)E_PARAMCOUNT;
     if (count < 1) return;
     char nm[48]; if (!E_GetStringCopy(0, nm, sizeof nm)) return;
-    for (char* q = nm; *q; q++) if (!((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') || (*q >= '0' && *q <= '9') || *q == '_')) { *q = 0; break; }
+    for (char* q = nm; *q; q++) if (!((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') || (*q >= '0' && *q <= '9') || *q == '_' || *q == ' ')) { *q = 0; break; }
     if (!nm[0] || strlen(nm) > 38) return;
     char pkt[64]; int len = _snprintf(pkt, sizeof pkt - 1, "F %s", nm);
+    if (g_mode == 1 && g_hostFN < HF_MAX) {                   /* the host remembers it (until its next checkpoint) */
+        int have = 0; for (LONG i = 0; i < g_hostFN; i++) if (!strcmp(g_hostFlags[i], nm)) { have = 1; break; }
+        if (!have) { strcpy(g_hostFlags[g_hostFN], nm); g_hostFN++; }
+    }
     if (len > 0 && g_peerKnown && g_udpSock != INVALID_SOCKET) {
         struct sockaddr_in to; memset(&to, 0, sizeof to);
         to.sin_family = AF_INET; to.sin_addr.s_addr = g_peerAddr; to.sin_port = htons((u_short)g_peerPort);
@@ -2175,6 +2249,12 @@ static void __cdecl H_coop_send_flag(void) {            /* coop_send_flag(name):
 }
 static void __cdecl H_coop_flag_applied(void) {         /* coop_flag_applied(name): the map script set a flag the peer reported (a log line, so the application is visible in the log) */
     char nm[48]; if (*(volatile int*)(ULONG_PTR)E_PARAMCOUNT >= 1 && E_GetStringCopy(0, nm, sizeof nm)) { nm[39] = 0; LOGF("flag applied: %s", nm); }
+}
+static void __cdecl H_coop_log(void) {                  /* coop_log(text): a line "script: <text>" in coop5.log (diagnostics that must NOT appear on the player's screen) */
+    char m[200]; if (*(volatile int*)(ULONG_PTR)E_PARAMCOUNT >= 1 && E_GetStringCopy(0, m, sizeof m)) {
+        m[sizeof m - 1] = 0; for (char* q = m; *q; q++) if ((unsigned char)*q < 32) *q = ' ';
+        LOGF("script: %s", m);
+    }
 }
 static void __cdecl H_coop_pop_flag(void) {             /* string coop_pop_flag(): the oldest received flag name, or "" */
     char nm[40] = "";
@@ -2302,6 +2382,7 @@ __declspec(dllexport) void __cdecl CoopInit(const CoopApi* api) {
     api->RegisterFunction("coop_grenade_vel", H_coop_grenade_vel);
     api->RegisterFunction("coop_pop_flag", H_coop_pop_flag);
     api->RegisterFunction("coop_flag_applied", H_coop_flag_applied);
+    api->RegisterFunction("coop_log", H_coop_log);
     int kc = api->RegisterFunction("coop_kill_count", H_coop_kill_count);
     int kp = api->RegisterFunction("coop_pop_kill", H_coop_pop_kill);
     LOGF("script built-ins registered (coop_version %s, coop_ping %s, publish %s, peer_state %s, peer_yaw %s, peer_seq %s, peer_stance %s, peer_event %s, peer_solo %s, peer_weapon %s, kill built-ins %s); engine lookup hooks %s",

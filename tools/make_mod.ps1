@@ -1111,6 +1111,7 @@ coop_chan_publish()
     thread coop_level_watch();
     thread coop_health_hud();
     thread coop_flag_sync();
+    thread coop_trigger_watch();
     thread coop_grenade_recv();
     thread coop_grenade_watch();
     thread coop_tank_main();
@@ -1896,8 +1897,17 @@ coop_flag_sync()
         n = coop_pop_flag();
         while (n != "")
         {
-            pend[pend.size] = n;
-            pendt[pendt.size] = gettime();
+            if (n == "entered trench" || n == "started charge")
+            {
+                // the trench sequence spawns the allies of the partner's area: a world that plays it while its own player is elsewhere crashes
+                // ("not on a friendly chain"): these flags are set only by this player's own entry
+                coop_dbg("COOPTRG flag " + n + " ignored (own entry only)");
+            }
+            else if (!coop_trigger_fire(n))
+            {
+                pend[pend.size] = n;
+                pendt[pendt.size] = gettime();
+            }
             n = coop_pop_flag();
         }
         np = [];
@@ -1910,13 +1920,19 @@ coop_flag_sync()
             {
                 if (!level.flag[pn])
                 {
-                    level.coop_flr[pn] = 1;
-                    level.flag[pn] = true;
-                    level notify(pn);
-                    coop_flag_applied(pn);
+                    // like the triggers: the world of a player who is far from the partner must not run ahead of him; the flag waits (10 min at most)
+                    if (distance(coop_peer_state(), level.player.origin) > 1500 && gettime() - pendt[j] < 600000)
+                        keep = 1;
+                    else
+                    {
+                        level.coop_flr[pn] = 1;
+                        level.flag[pn] = true;
+                        level notify(pn);
+                        coop_flag_applied(pn);
+                    }
                 }
             }
-            else if (gettime() - pendt[j] < 60000)
+            else if (gettime() - pendt[j] < 600000)
                 keep = 1;
             if (keep)
             {
@@ -1927,6 +1943,259 @@ coop_flag_sync()
         pend = np;
         pendt = npt;
     }
+}
+
+coop_trigger_watch()
+{
+    // Trigger mirror (experiment, opt-in: console variable coop_triggers "on" on BOTH PCs; coop_debug 1 only logs "COOPTRG" lines).
+    // Every trigger of the level gets a waiting thread. When the LOCAL PLAYER fires one, its key (class + origin) travels to the partner through
+    // the flag channel, and the partner's script fires the trigger with the same key (trig notify("trigger", player)): its objectives, scenes and
+    // spawns then advance too. A trigger fired this way is not sent back.
+    dbg = 0;
+    if (getcvarint("coop_debug") == 1)
+        dbg = 1;
+    mir = 0;
+    if (getcvar("coop_triggers") == "on")
+        mir = 1;
+    if (!dbg && !mir)
+        return;
+    while (!isdefined(level.player))
+        wait 0.1;
+    wait 2;
+    cls = [];
+    cls[0] = "trigger_multiple";
+    cls[1] = "trigger_once";
+    cls[2] = "trigger_use";
+    cls[3] = "trigger_radius";
+    cls[4] = "trigger_lookat";
+    cls[5] = "trigger_damage";
+    cls[6] = "trigger_use_touch";
+    cc = [];
+    cc[0] = "m";
+    cc[1] = "o";
+    cc[2] = "u";
+    cc[3] = "r";
+    cc[4] = "l";
+    cc[5] = "d";
+    cc[6] = "t";
+    level.coop_trig = [];
+    level.coop_trigk = [];
+    level.coop_trigb = [];
+    // triggers whose effect shuts the partner out (the lid of the pipe in trainyard closes behind the player and the NPC that closes it is unloaded):
+    // such a key is NEVER fired from the partner's message: the lid closes on this PC only when its own player fires the trigger (walks in)
+    level.coop_gate = [];
+    level.coop_gate[0] = "TRG_mtrigger_inpipe";
+    level.coop_gate[1] = "TRG_mtrigger_trench";
+    // triggers that spawn or steer FRIENDLY actors (friendly chains, waves, floods): mirrored, they spawn the allies of the PARTNER's area in this PC's world,
+    // and the engine stops with "Sentient actor_ally_... is following the sentient player ... that is not on a friendly chain" (guest crash in trainyard 22:42:10).
+    // Such a trigger (by targetname) is neither sent nor fired.
+    level.coop_deny = [];
+    level.coop_deny[0] = "friendly_wave";
+    level.coop_deny[1] = "flood_spawner";
+    level.coop_deny[2] = "trigger_friendlyvolume";
+    level.coop_deny[3] = "friendly_forcetrigger";
+    level.coop_deny[4] = "new_friendlies";
+    level.coop_deny[5] = "friendly_spawn";
+    level.coop_deny[6] = "escortchain";
+    level.coop_deny[7] = "delayed_spawner";
+    level.coop_deny[8] = "drone_allies";
+    level.coop_deny[9] = "flood_and_secure";
+    n = 0;
+    for (c = 0; c < cls.size; c++)
+    {
+        a = getentarray(cls[c], "classname");
+        for (i = 0; i < a.size; i++)
+        {
+            o = a[i].origin;
+            nm = "";
+            if (isdefined(a[i].targetname))
+                nm = a[i].targetname;
+            // point triggers (radius) are named by their origin; brush triggers have the origin 0 0 0 (every one would get the same key),
+            // so they are named by their targetname; a brush trigger without a targetname cannot be named and is not mirrored
+            // (several brush triggers can share an origin such as 0 0 -10000, so a brush trigger is named by its targetname when it has one)
+            key = "";
+            hasorg = 0;
+            if (o[0] != 0 || o[1] != 0 || o[2] != 0)
+                hasorg = 1;
+            if (c == 3 && hasorg)
+                key = "TRG_" + cc[c] + coop_trig_num(o[0]) + "_" + coop_trig_num(o[1]) + "_" + coop_trig_num(o[2]);
+            else if (nm != "")
+                key = "TRG_" + cc[c] + nm;
+            else if (hasorg)
+                key = "TRG_" + cc[c] + coop_trig_num(o[0]) + "_" + coop_trig_num(o[1]) + "_" + coop_trig_num(o[2]);
+            // several triggers share a targetname (26 "objective_hint" triggers in one level): the n-th one with the same key gets "_n"
+            // (the entity order of a level is the same on both PCs)
+            if (key != "")
+            {
+                same = 0;
+                for (q = 0; q < n; q++)
+                {
+                    if (level.coop_trigb[q] == key)
+                        same++;
+                }
+                level.coop_trigb[n] = key;
+                if (same > 0)
+                    key = key + "_" + (same + 1);
+            }
+            else
+                level.coop_trigb[n] = "";
+            for (d = 0; d < level.coop_deny.size; d++)
+            {
+                if (nm == level.coop_deny[d])
+                    key = "";
+            }
+            level.coop_trig[n] = a[i];
+            level.coop_trigk[n] = key;
+            thread coop_trigger_one(a[i], key, dbg, mir, cls[c], nm);
+            n++;
+        }
+    }
+    coop_dbg("COOPTRG watching " + n + " triggers, mirror " + mir);
+}
+
+coop_trig_num(v)
+{
+    k = int(v);
+    if (k < 0)
+        return "n" + (0 - k);
+    return "" + k;
+}
+
+coop_trigger_one(trig, key, dbg, mir, cn, nm)
+{
+    for (;;)
+    {
+        trig waittill("trigger", who);
+        isme = 0;
+        if (isdefined(who) && isdefined(level.player) && who == level.player)
+            isme = 1;
+        echo = 0;
+        if (isdefined(trig.coop_rt) && gettime() - trig.coop_rt < 1500)
+            echo = 1;
+        // only the FIRST firing of a trigger is mirrored: zone checks that fire every second (indoors / outdoors) stay local, scene starts happen once.
+        // (the stock script may delete the trigger right after it fires: nothing below reads a field of the trigger except the one we set first)
+        first = 1;
+        if (isdefined(trig) && isdefined(trig.coop_done))
+            first = 0;
+        if (isdefined(trig))
+            trig.coop_done = 1;
+        if (mir && isme && !echo && first && key != "")
+            coop_send_flag(key);
+        if (dbg && first)
+        {
+            if (nm == "")
+                nm = "-";
+            coop_dbg("COOPTRG " + key + " " + cn + " name=" + nm + " player=" + isme + " remote=" + echo + " t=" + gettime());
+        }
+        return;
+    }
+}
+
+coop_trigger_wait_near(trig, key)
+{
+    // up to 10 minutes; dropped when the local player fires the trigger himself
+    for (n = 0; n < 1200; n++)
+    {
+        if (!isdefined(trig))
+            return;
+        if (isdefined(trig.coop_done))
+            return;
+        if (distance(coop_peer_state(), level.player.origin) <= 1500)
+        {
+            trig.coop_rt = gettime();
+            trig notify("trigger", level.player);
+            coop_dbg("COOPTRG released " + key + ": this player came near the partner, fired");
+            return;
+        }
+        wait 0.5;
+    }
+}
+
+coop_trigger_gated(trig, key)
+{
+    // up to 10 minutes: the key is dropped as soon as the local player has fired the trigger himself (it is never fired from the partner's message)
+    for (n = 0; n < 1200; n++)
+    {
+        if (!isdefined(trig))
+            return;
+        if (isdefined(trig.coop_done))
+        {
+            coop_dbg("COOPTRG released " + key + ": fired here by this player");
+            return;
+        }
+        // (no release by distance: the pipe of trainyard starts right beside the spawn, so "near the partner" is also "outside the pipe" - the lid must close
+        // for this PC only when its own player walks in)
+        wait 0.5;
+    }
+}
+
+coop_trigger_refire(trig, key)
+{
+    // opt-in (coop_trig_retry "on"): the script of this PC may not have been waiting for the trigger yet when it was fired (a notify is not kept),
+    // so it is fired once more after 3 s
+    wait 3;
+    if (isdefined(trig))
+    {
+        trig.coop_rt = gettime();
+        trig notify("trigger", level.player);
+        coop_dbg("COOPTRG refire " + key);
+    }
+}
+
+coop_trigger_fire(key)
+{
+    if (!isdefined(level.coop_trigk))
+        return 0;
+    fired = 0;
+    found = 0;
+    sdone = 0;
+    for (i = 0; i < level.coop_trigk.size; i++)
+    {
+        if (key != "" && level.coop_trigk[i] == key && isdefined(level.coop_trig[i]))
+        {
+            found++;
+            if (isdefined(level.coop_trig[i].coop_done))
+                sdone++;
+            else
+            {
+                gated = 0;
+                for (g = 0; g < level.coop_gate.size; g++)
+                {
+                    if (level.coop_gate[g] == key)
+                        gated = 1;
+                }
+                if (gated)
+                {
+                    thread coop_trigger_gated(level.coop_trig[i], key);
+                    coop_dbg("COOPTRG held " + key + " (never fired from the partner; only this player's own entry fires it)");
+                }
+                else if (distance(coop_peer_state(), level.player.origin) > 1500)
+                {
+                    // this PC's player is far from the partner (still at the spawn, say): the script of this world must not run ahead of him - the
+                    // allies it spawns for the partner's area try to follow a player who is not on their friendly chain and the engine stops
+                    // ("Sentient actor_ally_... is following the sentient player ... that is not on a friendly chain", guest crashes in trainyard).
+                    // The key waits until this player is within 1500 units of the partner or fires the trigger himself.
+                    thread coop_trigger_wait_near(level.coop_trig[i], key);
+                    coop_dbg("COOPTRG waits " + key + " (this player is far from the partner)");
+                }
+                else
+                {
+                    level.coop_trig[i].coop_rt = gettime();
+                    level.coop_trig[i] notify("trigger", level.player);
+                    fired = 1;
+                    if (getcvar("coop_trig_retry") == "on")
+                        thread coop_trigger_refire(level.coop_trig[i], key);
+                }
+            }
+        }
+    }
+    if (fired)
+        coop_flag_applied(key);
+    else if (found > 0)
+        coop_dbg("COOPTRG recv " + key + " alreadyfired=" + sdone + " of " + found);
+    else if (!isdefined(level.flag) || !isdefined(level.flag[key]))
+        coop_dbg("COOPTRG recv " + key + " unknown here (no trigger, no flag)");
+    return found;
 }
 
 coop_health_hud()
@@ -1974,6 +2243,8 @@ coop_health_hud()
             if (shown)
             {
                 setcvar("coop_partner_on", "0");
+                setcvar("coop_partner", "");   // the value item has no on-test of its own: blank it so the figure never stays without its label
+                lasthp = -1;
                 shown = 0;
             }
             continue;
@@ -2112,7 +2383,7 @@ $coop = if ($Probe -eq 'puppet') { $puppetBody }
 Write-Host "probe variant: $Probe"
 
 # Diagnostic lines ("COOPT shot ...", "COOPN ...") reach console.log through iprintln, which also prints them on the
-# player's screen. In the shipped mod they are silent: coop_dbg prints only when the test switch coop_debug is 1.
+# player's screen. In the shipped mod they are silent: with the test switch coop_debug 1 coop_dbg writes a "script: ..." line to coop5.log (never to the screen).
 if ($Probe -eq 'net7') {
     $coop = $coop -replace 'iprintln\("COOP', 'coop_dbg("COOP'
     $coop += @"
@@ -2120,7 +2391,7 @@ if ($Probe -eq 'net7') {
 coop_dbg(msg)
 {
     if (getcvarint("coop_debug") == 1)
-        iprintln(msg);
+        coop_log(msg);
 }
 "@
 }
