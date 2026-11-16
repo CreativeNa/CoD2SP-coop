@@ -5,7 +5,8 @@
 // CO-OP popup: opened from the CO-OP button that tools\patch_menu.py adds to the main menu.
 // It only sets two dvars; the bridge (cod2net5.dll, loaded by the d3d9 proxy) reads them:
 //   coop_cmd = "host" | "join" | "off"        coop_ip = the host's IPv4 address (for Join)
-// Built only from syntax found in the game's own menus (ui/quit.menu popup, ui/save_load.menu edit field).
+// Layout: a left column of controls, a right column of explanations,
+// two boxes at the bottom (information and the session state) and the key hints on the last line.
 // ------------------------------------------------------------------------------------------------------------
 
 	menuDef
@@ -13,10 +14,10 @@
 		name "coop_menu"
 		visible 0
 		fullscreen 0
-		rect 140 40 360 440
+		rect 0 0 640 480
 		focusColor GLOBAL_FOCUSED_COLOR
 		style 1
-		border 1
+		border 0
 		popup
 		onOpen
 		{
@@ -32,31 +33,52 @@
 		}
 		onESC { close coop_menu; }
 
+		// ---- background: a dim over the main menu, then the panel itself --------------------------------
 		itemDef
 		{
-			name backimage2fade
+			name bgdim
 			style WINDOW_STYLE_SHADER
-			rect -140 -90 640 480
+			rect 0 0 640 480
 			background "white"
-			forecolor 0 0 0 0.3
-			backcolor 0 0 0 0.3
+			forecolor 0 0 0 0.55
+			backcolor 0 0 0 0.55
 			visible 1
 			decoration
 		}
+
 		itemDef
 		{
-			name backimage2
+			name panel
 			style WINDOW_STYLE_SHADER
-			rect -60 0 480 440
-			background "popmenu_bg"
+			rect 10 8 620 464
+			background "white"
+			forecolor 0.04 0.04 0.05 0.66
+			backcolor 0.04 0.04 0.05 0.66
 			visible 1
 			decoration
+		}
+
+		itemDef
+		{
+			name verline
+			type ITEM_TYPE_TEXT
+			style 0
+			text "__COOPVER__"
+			textscale .22
+			textstyle ITEM_TEXTSTYLE_SHADOWED
+			rect 590 470 155 12
+			textalign 2
+			textalignx 155
+			textaligny 8
+			decoration
+			forecolor .75 .75 .7 1
+			visible 1
 		}
 		itemDef
 		{
 			name goldline
 			style WINDOW_STYLE_SHADER
-			rect -10 34 380 24
+			rect 10 46 620 6
 			background "popmenu_goldline"
 			visible 1
 			decoration
@@ -69,39 +91,42 @@
 			style 0
 			textscale .5
 			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 180 34 110 20
+			rect 10 18 620 24
 			textalign 1
-			textalignx -7
-			textaligny 5
+			textalignx 310
+			textaligny 6
 			decoration
 			forecolor POPMENU_HEADER_COLOR
 			visible 1
 		}
+
+		// ---- left column: how to connect ----------------------------------------------------------------
 
 		itemDef
 		{
 			name hint1
 			text "@COOP_HINT1"
 			style 0
-			textscale .3
+			textscale .27
 			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 20 62 320 16
+			rect 24 60 300 14
 			textalign 0
-			textaligny 12
+			textaligny 10
 			decoration
 			forecolor .9 .9 .9 1
 			visible 1
 		}
+
 		itemDef
 		{
 			name hint2
 			text "@COOP_HINT2"
 			style 0
-			textscale .3
+			textscale .27
 			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 20 78 320 16
+			rect 24 74 300 14
 			textalign 0
-			textaligny 12
+			textaligny 10
 			decoration
 			forecolor .9 .9 .9 1
 			visible 1
@@ -116,13 +141,13 @@
 			style 1
 			maxchars 15
 			maxPaintChars 15
-			rect 20 98 320 22
+			rect 24 92 300 20
 			border 1
 			bordercolor .5 .5 .5 .5
 			textalign ITEM_ALIGN_LEFT
-			textaligny 16
+			textaligny 14
 			textalignx 8
-			textscale .32
+			textscale .3
 			outlinecolor 1 .5 .5 .5
 			forecolor .9 .9 .9 1
 			backcolor 0 0 0 .4
@@ -136,44 +161,47 @@
 			name modelabel
 			text "@COOP_STATUS"
 			style 0
-			textscale .3
+			textscale .28
 			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 20 126 90 14
+			rect 24 118 90 14
 			textalign 0
-			textaligny 11
+			textaligny 10
 			decoration
 			forecolor .8 .8 .8 1
 			visible 1
 		}
+
 		itemDef
 		{
 			name modevalue
 			type ITEM_TYPE_TEXT
 			style 0
 			dvar "coop_status"
-			textscale .3
+			textscale .28
 			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 80 126 270 14
+			rect 116 118 208 14
 			textalign 0
-			textaligny 11
+			textaligny 10
 			decoration
 			forecolor 1 .9 .3 1
 			visible 1
 		}
+
+		// ---- left column: the session buttons -----------------------------------------------------------
 
 		itemDef
 		{
 			name host
 			text "HOST"
 			type ITEM_TYPE_BUTTON
-			textscale .45
+			textscale .4
 			style UI_BUTTON_STYLE
 			textfont UI_FONT_NORMAL
 			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 20 150 150 30
+			rect 24 140 300 26
 			textalign 1
-			textalignx 75
-			textaligny 21
+			textalignx 150
+			textaligny 19
 			forecolor UI_BUTTON_TEXT_COLOR
 			visible 1
 			action
@@ -183,19 +211,20 @@
 			}
 			mouseEnter { play "mouse_over"; }
 		}
+
 		itemDef
 		{
 			name join
 			text "JOIN"
 			type ITEM_TYPE_BUTTON
-			textscale .45
+			textscale .4
 			style UI_BUTTON_STYLE
 			textfont UI_FONT_NORMAL
 			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 190 150 150 30
+			rect 24 168 300 26
 			textalign 1
-			textalignx 75
-			textaligny 21
+			textalignx 150
+			textaligny 19
 			forecolor UI_BUTTON_TEXT_COLOR
 			visible 1
 			action
@@ -211,14 +240,14 @@
 			name stop
 			text "STOP"
 			type ITEM_TYPE_BUTTON
-			textscale .4
+			textscale .36
 			style UI_BUTTON_STYLE
 			textfont UI_FONT_NORMAL
 			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 20 196 150 26
+			rect 24 196 300 24
 			textalign 1
-			textalignx 75
-			textaligny 19
+			textalignx 150
+			textaligny 17
 			forecolor UI_BUTTON_TEXT_COLOR
 			visible 1
 			action
@@ -228,71 +257,68 @@
 			}
 			mouseEnter { play "mouse_over"; }
 		}
-		itemDef
-		{
-			name back
-			text "@COOP_BACK"
-			type ITEM_TYPE_BUTTON
-			textscale .4
-			style UI_BUTTON_STYLE
-			textfont UI_FONT_NORMAL
-			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 190 196 150 26
-			textalign 1
-			textalignx 75
-			textaligny 19
-			forecolor UI_BUTTON_TEXT_COLOR
-			visible 1
-			action
-			{
-				play "mouse_click";
-				close coop_menu;
-			}
-			mouseEnter { play "mouse_over"; }
-		}
 
 		itemDef
 		{
 			name winlabel
 			text "@COOP_WINDOW"
 			style 0
-			textscale .3
+			textscale .28
 			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 20 236 90 14
+			rect 24 256 90 14
 			textalign 0
-			textaligny 11
+			textaligny 10
 			decoration
 			forecolor .8 .8 .8 1
 			visible 1
 		}
+
 		itemDef
 		{
-			name winvalue
-			type ITEM_TYPE_TEXT
+			name coop_borderless_on
+			text "@COOP_BORDERLESS"
+			dvarTest "coop_borderless"
+			showDvar { "on" }
 			style 0
-			dvar "coop_borderless"
-			textscale .32
+			textscale .26
 			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 112 236 150 14
+			rect 116 256 200 14
 			textalign 0
-			textaligny 11
+			textaligny 10
 			decoration
 			forecolor 1 .9 .3 1
 			visible 1
 		}
 		itemDef
 		{
+			name coop_borderless_off
+			text "@COOP_NORMAL"
+			dvarTest "coop_borderless"
+			hideDvar { "on" }
+			style 0
+			textscale .26
+			textstyle ITEM_TEXTSTYLE_SHADOWED
+			rect 116 256 200 14
+			textalign 0
+			textaligny 10
+			decoration
+			forecolor 1 .9 .3 1
+			visible 1
+		}
+
+		itemDef
+		{
 			name winon
 			text "@COOP_BORDERLESS"
 			type ITEM_TYPE_BUTTON
-			textscale .32
+			textscale .26
 			style UI_BUTTON_STYLE
 			textfont UI_FONT_NORMAL
 			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 20 258 150 24
+			rect 24 272 148 18
 			textalign 1
-			textalignx 75
-			textaligny 17
+			textalignx 74
+			textaligny 13
 			forecolor UI_BUTTON_TEXT_COLOR
 			visible 1
 			action
@@ -302,19 +328,20 @@
 			}
 			mouseEnter { play "mouse_over"; }
 		}
+
 		itemDef
 		{
 			name winoff
 			text "@COOP_NORMAL"
 			type ITEM_TYPE_BUTTON
-			textscale .32
+			textscale .26
 			style UI_BUTTON_STYLE
 			textfont UI_FONT_NORMAL
 			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 190 258 150 24
+			rect 176 272 148 18
 			textalign 1
-			textalignx 75
-			textaligny 17
+			textalignx 74
+			textaligny 13
 			forecolor UI_BUTTON_TEXT_COLOR
 			visible 1
 			action
@@ -330,43 +357,62 @@
 			name mouselabel
 			text "@COOP_MOUSE"
 			style 0
-			textscale .3
+			textscale .28
 			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 20 290 90 14
+			rect 24 298 90 14
 			textalign 0
-			textaligny 11
+			textaligny 10
 			decoration
 			forecolor .8 .8 .8 1
 			visible 1
 		}
+
 		itemDef
 		{
-			name mousevalue
-			type ITEM_TYPE_TEXT
+			name coop_rawmouse_on
+			text "@COOP_RAW"
+			dvarTest "coop_rawmouse"
+			showDvar { "on" }
 			style 0
-			dvar "coop_rawmouse"
-			textscale .32
+			textscale .26
 			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 112 290 150 14
+			rect 116 298 200 14
 			textalign 0
-			textaligny 11
+			textaligny 10
 			decoration
 			forecolor 1 .9 .3 1
 			visible 1
 		}
 		itemDef
 		{
+			name coop_rawmouse_off
+			text "@COOP_NORMAL"
+			dvarTest "coop_rawmouse"
+			hideDvar { "on" }
+			style 0
+			textscale .26
+			textstyle ITEM_TEXTSTYLE_SHADOWED
+			rect 116 298 200 14
+			textalign 0
+			textaligny 10
+			decoration
+			forecolor 1 .9 .3 1
+			visible 1
+		}
+
+		itemDef
+		{
 			name mouseraw
 			text "@COOP_RAW"
 			type ITEM_TYPE_BUTTON
-			textscale .32
+			textscale .26
 			style UI_BUTTON_STYLE
 			textfont UI_FONT_NORMAL
 			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 20 312 150 24
+			rect 24 314 148 18
 			textalign 1
-			textalignx 75
-			textaligny 17
+			textalignx 74
+			textaligny 13
 			forecolor UI_BUTTON_TEXT_COLOR
 			visible 1
 			action
@@ -376,19 +422,20 @@
 			}
 			mouseEnter { play "mouse_over"; }
 		}
+
 		itemDef
 		{
 			name mousenorm
 			text "@COOP_NORMAL"
 			type ITEM_TYPE_BUTTON
-			textscale .32
+			textscale .26
 			style UI_BUTTON_STYLE
 			textfont UI_FONT_NORMAL
 			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 190 312 150 24
+			rect 176 314 148 18
 			textalign 1
-			textalignx 75
-			textaligny 17
+			textalignx 74
+			textaligny 13
 			forecolor UI_BUTTON_TEXT_COLOR
 			visible 1
 			action
@@ -404,43 +451,62 @@
 			name followlabel
 			text "@COOP_MISSION"
 			style 0
-			textscale .3
+			textscale .28
 			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 20 344 90 14
+			rect 24 340 90 14
 			textalign 0
-			textaligny 11
+			textaligny 10
 			decoration
 			forecolor .8 .8 .8 1
 			visible 1
 		}
+
 		itemDef
 		{
-			name followvalue
-			type ITEM_TYPE_TEXT
+			name coop_follow_on
+			text "@COOP_FOLLOW_ON"
+			dvarTest "coop_follow"
+			showDvar { "on" }
 			style 0
-			dvar "coop_follow"
-			textscale .32
+			textscale .26
 			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 112 344 150 14
+			rect 116 340 200 14
 			textalign 0
-			textaligny 11
+			textaligny 10
 			decoration
 			forecolor 1 .9 .3 1
 			visible 1
 		}
 		itemDef
 		{
+			name coop_follow_off
+			text "@COOP_FOLLOW_OFF"
+			dvarTest "coop_follow"
+			hideDvar { "on" }
+			style 0
+			textscale .26
+			textstyle ITEM_TEXTSTYLE_SHADOWED
+			rect 116 340 200 14
+			textalign 0
+			textaligny 10
+			decoration
+			forecolor 1 .9 .3 1
+			visible 1
+		}
+
+		itemDef
+		{
 			name followon
 			text "@COOP_FOLLOW_ON"
 			type ITEM_TYPE_BUTTON
-			textscale .32
+			textscale .26
 			style UI_BUTTON_STYLE
 			textfont UI_FONT_NORMAL
 			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 20 366 150 24
+			rect 24 356 148 18
 			textalign 1
-			textalignx 75
-			textaligny 17
+			textalignx 74
+			textaligny 13
 			forecolor UI_BUTTON_TEXT_COLOR
 			visible 1
 			action
@@ -450,19 +516,20 @@
 			}
 			mouseEnter { play "mouse_over"; }
 		}
+
 		itemDef
 		{
 			name followoff
 			text "@COOP_FOLLOW_OFF"
 			type ITEM_TYPE_BUTTON
-			textscale .32
+			textscale .26
 			style UI_BUTTON_STYLE
 			textfont UI_FONT_NORMAL
 			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 190 366 150 24
+			rect 176 356 148 18
 			textalign 1
-			textalignx 75
-			textaligny 17
+			textalignx 74
+			textaligny 13
 			forecolor UI_BUTTON_TEXT_COLOR
 			visible 1
 			action
@@ -473,6 +540,146 @@
 			mouseEnter { play "mouse_over"; }
 		}
 
+		// ---- right column: what every button does -------------------------------------------------------
+
+		itemDef
+		{
+			name exp_title
+			text "@COOP_EXPL_TITLE"
+			style 0
+			textscale .3
+			textstyle ITEM_TEXTSTYLE_SHADOWED
+			rect 344 60 272 16
+			textalign 1
+			textalignx 136
+			textaligny 11
+			decoration
+			forecolor 1 .85 .35 1
+			visible 1
+		}
+
+		itemDef
+		{
+			name exp1
+			text "@COOP_EXP1"
+			style 0
+			textscale .24
+			textstyle ITEM_TEXTSTYLE_SHADOWED
+			rect 344 82 272 14
+			textalign 0
+			textaligny 10
+			decoration
+			forecolor .85 .85 .85 1
+			visible 1
+		}
+
+		itemDef
+		{
+			name exp2
+			text "@COOP_EXP2"
+			style 0
+			textscale .24
+			textstyle ITEM_TEXTSTYLE_SHADOWED
+			rect 344 98 272 14
+			textalign 0
+			textaligny 10
+			decoration
+			forecolor .85 .85 .85 1
+			visible 1
+		}
+
+		itemDef
+		{
+			name exp3
+			text "@COOP_EXP3"
+			style 0
+			textscale .24
+			textstyle ITEM_TEXTSTYLE_SHADOWED
+			rect 344 114 272 14
+			textalign 0
+			textaligny 10
+			decoration
+			forecolor .85 .85 .85 1
+			visible 1
+		}
+
+		itemDef
+		{
+			name exp5
+			text "@COOP_EXP5"
+			style 0
+			textscale .24
+			textstyle ITEM_TEXTSTYLE_SHADOWED
+			rect 344 152 272 14
+			textalign 0
+			textaligny 10
+			decoration
+			forecolor .85 .85 .85 1
+			visible 1
+		}
+
+		itemDef
+		{
+			name exp6
+			text "@COOP_EXP6"
+			style 0
+			textscale .24
+			textstyle ITEM_TEXTSTYLE_SHADOWED
+			rect 344 168 272 14
+			textalign 0
+			textaligny 10
+			decoration
+			forecolor .85 .85 .85 1
+			visible 1
+		}
+
+		itemDef
+		{
+			name exp7
+			text "@COOP_EXP7"
+			style 0
+			textscale .24
+			textstyle ITEM_TEXTSTYLE_SHADOWED
+			rect 344 184 272 14
+			textalign 0
+			textaligny 10
+			decoration
+			forecolor .85 .85 .85 1
+			visible 1
+		}
+
+		itemDef
+		{
+			name exp8
+			text "@COOP_EXP8"
+			style 0
+			textscale .24
+			textstyle ITEM_TEXTSTYLE_SHADOWED
+			rect 344 200 272 14
+			textalign 0
+			textaligny 10
+			decoration
+			forecolor .85 .85 .85 1
+			visible 1
+		}
+
+		// ---- right column: the session box --------------------------------------------------------------
+
+		itemDef
+		{
+			name info_title
+			text "@COOP_INFO_TITLE"
+			style 0
+			textscale .28
+			textstyle ITEM_TEXTSTYLE_SHADOWED
+			rect 24 392 300 14
+			textalign 0
+			textaligny 10
+			decoration
+			forecolor 1 .85 .35 1
+			visible 1
+		}
+
 		itemDef
 		{
 			name hint3
@@ -480,15 +687,16 @@
 			dvarTest "sv_running"
 			hideDvar { "1" }
 			style 0
-			textscale .28
+			textscale .24
 			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 20 398 320 16
+			rect 24 408 300 12
 			textalign 0
-			textaligny 12
+			textaligny 9
 			decoration
 			forecolor .8 .8 .8 1
 			visible 1
 		}
+
 		itemDef
 		{
 			name hint5
@@ -496,11 +704,11 @@
 			dvarTest "sv_running"
 			showDvar { "1" }
 			style 0
-			textscale .28
+			textscale .24
 			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 20 398 320 16
+			rect 24 408 300 12
 			textalign 0
-			textaligny 12
+			textaligny 9
 			decoration
 			forecolor .8 .8 .8 1
 			visible 1
@@ -511,14 +719,30 @@
 			name hint4
 			text "@COOP_HINT4"
 			style 0
-			textscale .28
+			textscale .24
 			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 20 416 320 16
+			rect 24 422 300 12
 			textalign 0
-			textaligny 12
+			textaligny 9
+			decoration
+			forecolor .8 .8 .8 1
+			visible 1
+		}
+
+		itemDef
+		{
+			name hint1b
+			text "@COOP_HINT1"
+			style 0
+			textscale .24
+			textstyle ITEM_TEXTSTYLE_SHADOWED
+			rect 24 436 300 12
+			textalign 0
+			textaligny 9
 			decoration
 			forecolor .8 .8 .8 1
 			visible 1
 		}
 	}
 }
+

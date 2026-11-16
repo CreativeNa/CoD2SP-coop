@@ -1,4 +1,3 @@
-# cod2-coop\tools\make_mod.ps1
 # Build the probe mod for the TEST COPY only.
 #
 # How the hook works: the engine calls maps/<level>.gsc::main(). We take the original
@@ -554,7 +553,7 @@ coop_pose()
         {
             cur = a;
             if (a == 1)      self setFlaggedAnimKnobRestart("coop_pose", %stand_alert_2, 1, 0.2, 1);
-            else if (a == 2) self setFlaggedAnimKnobRestart("coop_pose", %stand_alert_3, 1, 0.2, 1);
+            else if (a == 2) self setFlaggedAnimKnobRestart("coop_pose", %stand_alert_2, 1, 0.2, 1);
             else if (a == 3) self setFlaggedAnimKnobRestart("coop_pose", %stand_aim_straight, 1, 0.2, 1);
             else if (a == 4) self setFlaggedAnimKnobRestart("coop_pose", %crouch_aim_straight, 1, 0.2, 1);
             else if (a == 5) self setFlaggedAnimKnobRestart("coop_pose", %stand_shoot_auto_straight, 1, 0.2, 1);
@@ -660,7 +659,7 @@ coop_probe_loop()
 # net7 = net5 + the script channel, NO probe calls (the release candidate): the local player is published by coop_publish_state and the puppet reads the peer through the built-ins (coop_peer_state / coop_peer_yaw) instead of getcvarfloat on strings the
 # bridge wrote. Same puppet code, only the three reads change. Needs the proxy hooks (like net6).
 $net7Body = $net5Body -replace 'thread coop_publish\(\);', 'thread coop_chan_publish();'
-$net7Body = $net7Body -replace '(?m)^(\s*)coop_orig_main\(\);', "`$1coop_apply_host_skill();`n`$1coop_barrier_now();`n`$1coop_orig_main();"
+$net7Body = $net7Body -replace '(?m)^(\s*)coop_orig_main\(\);', "`$1coop_apply_host_skill();`n`$1coop_barrier_now();`n`$1setcvar(`"coop_ver`", `"1.3 | `" + coop_modver());`n`$1coop_orig_main();"
 # the puppet wears the soldier of the campaign of the map (the player looks different from map to map): done BEFORE the new functions are appended
 $net7Body = $net7Body -replace 'puppet character\\russian_winter_trench_volskey::main\(\);', 'coop_dress(puppet);'
 $net7Body = $net7Body -replace 'character\\russian_winter_trench_volskey::precache\(\);', 'coop_precache_character();'
@@ -876,7 +875,10 @@ coop_tank_main()
         // the level's own tank is not used any more: the partner's model stands in its place
         pa hide();
     }
-    ghost = spawn("script_model", pa.origin);
+    // The copy of the partner tank is a static model with the detailed Crusader mesh: a real script_vehicle
+    // looked wrong (blocky model, spawned inside the player, fell through the ground) and its engine-driven
+    // tracks could not make up for that.
+    ghost = spawn("script_model", (pa.origin[0] + 600, pa.origin[1], pa.origin[2]));
     ghost setmodel("xmodel/vehicle_crusader2_static");
     thread coop_tank_publish(mine);
     thread coop_tank_follow(ghost);
@@ -892,7 +894,7 @@ coop_tank_publish(tank)
         wait 0.05;
         if (!isdefined(tank))
             return;
-        coop_send_tank(tank.origin, tank.angles, tank gettagangles("tag_turret"), tank.coop_fires);
+    coop_send_tank(tank.origin, tank.angles, level.player.angles, tank.coop_fires);   // the view angles are the turret direction in a tank (tag_turret does not exist on this model)
     }
 }
 
@@ -913,6 +915,13 @@ coop_tank_follow(ghost)
     ghost hide();
     lastfire = coop_tank_fire();
     shown = 0;
+    // Movement of the partner's tank copy. The vehicle is simulated by the engine, so the copy is driven by
+    // moveTo() and NOT by writing .origin (that made the engine fight it: the constant shaking) and not by
+    // rotateTo() while moving (that fought the steering: the copy jumped around). moveTo with a 0.2 s
+    // interpolation lets the engine drive at the real speed with its own acceleration and steering, so the
+    // hull turns because it is going there - a tracked vehicle cannot slide sideways, which is what made the
+    // old 0.06 s version look like ice. A stationary hull turn (the partner rotating in place, the position
+    // barely changes) is the only case where we rotate the hull ourselves.
     for (;;)
     {
         wait 0.05;
@@ -928,10 +937,27 @@ coop_tank_follow(ghost)
         {
             shown = 1;
             ghost.origin = p;
+            ghost rotateTo(coop_tank_ang(), 0.1);
             ghost show();
         }
-        ghost moveTo(p, 0.06);
-        ghost rotateTo(coop_tank_ang(), 0.06);
+
+        cur = ghost.origin;
+        d = distance((cur[0], cur[1], 0), (p[0], p[1], 0));
+
+        // a jump no tank can drive (teleport, respawn, a new mission): snap instead of racing there
+        if (d > 260)
+        {
+            ghost.origin = p;
+            ghost rotateTo(coop_tank_ang(), 0.1);
+            continue;
+        }
+
+        // The engine drives the copy to the packet position over 0.2 s, so it travels at the partner's real
+        // speed with the engine's own acceleration and braking (the old 0.06 s window made it dart to every
+        // packet - that was the ice). The hull angle is still ours: moveTo steers the vehicle along the path but
+        // does not turn the body, and leaving the rotation out made the copy drive sideways.
+        ghost moveTo(p, 0.2);
+        ghost rotateTo(coop_tank_ang(), 0.2);
         f = coop_tank_fire();
         if (f != lastfire)
         {
@@ -944,19 +970,33 @@ coop_tank_follow(ghost)
 // a shot of the partner's tank: muzzle fire and an explosion where the shell hits; damages enemies only
 coop_tank_shot(ghost, p, ang)
 {
-    fw = anglestoforward(ang);
-    st = (p[0] + fw[0] * 150, p[1] + fw[1] * 150, p[2] + 90 + fw[2] * 150);
+    // The partner cannon. The crusader model has NO tags at all for us: gettagangles("tag_turret") and
+    // gettagorigin("tag_flash") return undefined and the calls threw a script error (the console.log showed the
+    // source line instead of a value), which is why there was no shot at all. So the muzzle is computed from the
+    // hull origin along the turret direction - the turret direction now comes from the partner view angles,
+    // which are exactly where the cannon points while he drives the tank.
+    o = ghost.origin;
+    // the copy is a static model: its barrel is one piece with the hull and cannot turn, so the shot must
+    // come from where that barrel points, otherwise the flash hangs in the air beside the tank
+    fw = anglestoforward(coop_tank_ang());
+    mz = (o[0] + fw[0] * 118, o[1] + fw[1] * 118, o[2] + 78 + fw[2] * 118);        // the barrel tip (220 was far beyond the real barrel: measured on a screenshot)
+    back = (o[0] - fw[0] * 60, o[1] - fw[1] * 60, o[2] + 20);                        // dust blown back by the blast
+
     ghost playsound("crusader_fire");
-    // muzzle blast: the small explosion effect (a rifle flash is invisible at this size)
-    if (isdefined(level.coop_fx_boom))
-        playfx(level.coop_fx_boom, st);
-    else if (isdefined(level.coop_fx_rifle))
-        playfx(level.coop_fx_rifle, st, fw);
-    en = (st[0] + fw[0] * 12000, st[1] + fw[1] * 12000, st[2] + fw[2] * 12000);
-    tr = bullettrace(st, en, false, undefined);
+    if (isdefined(level.coop_fx_tankflash))
+        playfx(level.coop_fx_tankflash, mz, fw);
+    // no blow-back dust: on the static model it hung over the turret as a yellow sand cloud
+    if (isdefined(level.coop_fx_tankdist))
+        playfx(level.coop_fx_tankdist, mz);
+    iprintln("COOPT shot hull=" + o[0] + " " + o[1] + " " + o[2] + " mz=" + mz[0] + " " + mz[1] + " " + mz[2] + " fw=" + fw[0] + " " + fw[1] + " " + fw[2]);
+
+    en = (mz[0] + fw[0] * 12000, mz[1] + fw[1] * 12000, mz[2] + fw[2] * 12000);
+    tr = bullettrace(mz, en, false, undefined);
     hit = tr["position"];
     wait 0.4;
-    if (isdefined(level.coop_fx_boom))
+    if (isdefined(level.coop_fx_tankhit))
+        playfx(level.coop_fx_tankhit, hit, (0, 0, 1));
+    else if (isdefined(level.coop_fx_boom))
         playfx(level.coop_fx_boom, hit);
     earthquake(0.3, 0.6, hit, 700);
     ai = getaiarray("axis");
@@ -969,7 +1009,6 @@ coop_tank_shot(ghost, p, ang)
             ai[i] doDamage(int(600 * (1 - d / 300)) + 20, hit);
     }
 }
-
 // START BARRIER: both PCs load a mission at different speeds, so the mission would begin at different moments on the two PCs (scripted scenes then
 // diverge for good). This is called from main() BEFORE the mission's own script and does not wait: the bridge pauses the game at once (not one frame of
 // the world runs, no sound), shows its own notice window and lets go when the partner has reached the same point in the same mission (or after 20 s).
@@ -1085,6 +1124,7 @@ coop_chan_publish()
     autorl = 0;
     maxclip = 0;
     lastbp = 0;
+    lastrl = 0;
     level.coop_fc = 0;
     for (;;)
     {
@@ -1144,12 +1184,22 @@ coop_chan_publish()
             maxclip = clip;
         if (clip > maxclip)
             maxclip = clip;
+        // reload: only when the game will really do it. The clip grows only at the END of a reload, so the key
+        // press is used, but the weapon's own rule is respected: a bolt action rifle fed by stripper clips
+        // (Lee Enfield: 10 in the magazine, 5 per reload) refuses a reload unless a whole clip fits, so the puppet
+        // must not animate a reload the game rejected. rq = how many rounds one reload adds.
+        rq = 1;
+        if (wn == "enfield" || wn == "enfield_scope" || wn == "enfield_sniper")
+            rq = 5;
         bp = level.player buttonpressed("r");   // buttonpressed takes KEY names (a single character is the key itself): R is the default reload key
         if (!isdefined(bp))
             bp = 0;
         rl = 0;
-        if (bp && !lastbp && wi == awi && clip >= 0 && clip < maxclip)
+        if (bp && !lastbp && wi == awi && clip >= 0 && maxclip - clip >= rq && gettime() - lastrl >= 700)
+        {
             rl = 1;
+            lastrl = gettime();
+        }
         // the magazine ran empty and the game reloads by itself (reserve left): show the reload a moment after the last shot
         if (wi == awi && lastclip > 0 && clip == 0 && ammo > 0)
             autorl = gettime() + 350;
@@ -1242,6 +1292,8 @@ coop_pose_move()
     nextrestart = 0;
     lastev = coop_peer_event();
     busyuntil = 0;
+    lastrl_anim = 0;
+    reloadfree = 0;
     lastdbg = 0;
     lastw = -1;
     lastpz = 0;
@@ -1417,21 +1469,47 @@ coop_pose_move()
             }
             else if (ty == 4)
             {
+                // the partner weapon decides the reload clip (this is a different thread than the pose code)
+                ps = 0;
+                if (lastw > 0 && lastw <= 32)
+                {
+                    pw = level.coop_weps[lastw - 1];
+                    if (pw == "tt30" || pw == "luger" || pw == "colt" || pw == "webley")
+                        ps = 1;
+                }
+                // spam guard: the peer's reload key can repeat faster than a clip lasts, and the game may refuse the
+                // reload at all (Lee Enfield with 6..9 rounds, for instance). The animation must not restart on every
+                // repeat: only once per 800 ms, and a rejected repeat must not even extend busyuntil.
+                if (gettime() < reloadfree)
+                {
+                    // the reload clip that is playing has not finished yet: a new key press must not restart it.
+                    // A fixed window is not enough - the Sten reload is longer than 800 ms, so a press at ~1/s
+                    // restarted the clip in the middle (that is what was seen in tests). Wait for the clip.
+                    wait 0.05;
+                    continue;
+                }
                 // prone: no reload clip (the standing one would make the puppet get up); it stays in its prone pose
                 if (coop_peer_stance() == 1)
                 {
-                    self setflaggedanimknobrestart("coop_pose", %reload_crouch_rifle, 1, 0.1, 1);
+                    if (ps)
+                        self setflaggedanimknobrestart("coop_pose", %pt_reload_crouch_pistol, 1, 0.1, 1);
+                    else
+                        self setflaggedanimknobrestart("coop_pose", %reload_crouch_rifle, 1, 0.1, 1);
                     t = int(getanimlength(%reload_crouch_rifle) * 1000);
                 }
                 else if (coop_peer_stance() != 2)
                 {
-                    self setflaggedanimknobrestart("coop_pose", %reload_stand_rifle, 1, 0.1, 1);
+                    if (ps)
+                        self setflaggedanimknobrestart("coop_pose", %pt_reload_stand_pistol, 1, 0.1, 1);
+                    else
+                        self setflaggedanimknobrestart("coop_pose", %reload_stand_rifle, 1, 0.1, 1);
                     t = int(getanimlength(%reload_stand_rifle) * 1000);
                 }
                 else
                     t = 300;
             }
             busyuntil = gettime() + t;
+            if (ty == 4) reloadfree = busyuntil;   // the reload clip plays until then: a key press must not restart it
             cur = -1;
         }
         if (gettime() < busyuntil)
@@ -1455,6 +1533,15 @@ coop_pose_move()
         un = 0;
         if (lastw == 0 || getcvarint("coop_un") == 1)       // coop_un 1: a test switch (the partner is shown unarmed)
             un = 1;
+        // pistols hold a different pose in every stance: idle, run, crouch, prone, crawl and the reload are all
+        // separate clips in the game, so the puppet has to use them instead of the rifle set
+        ps = 0;
+        if (lastw > 0 && lastw <= 32)
+        {
+            pw = level.coop_weps[lastw - 1];
+            if (pw == "tt30" || pw == "luger" || pw == "colt" || pw == "webley")
+                ps = 1;
+        }
         now = gettime();
         pvj = coop_peer_state();
         dz = pvj[2] - lastpz;
@@ -1486,20 +1573,23 @@ coop_pose_move()
                 if (mv)
                     self setflaggedanimknobrestart("coop_pose", %prone_crawl, 1, 0.2, 1);
                 else if (un)
-                    self setflaggedanimknobrestart("coop_pose", %wounded_crawlidle, 1, 0.2, 1);       // lying, no rifle to aim with
+                    self setflaggedanimknobrestart("coop_pose", %wounded_crawlidle, 1, 0.2, 1);
+                else if (ps)
+                    self setflaggedanimknobrestart("coop_pose", %pt_prone_shoot_pistol, 1, 0.2, 1);
                 else
                     self setflaggedanimknobrestart("coop_pose", %prone_aim_idle, 1, 0.2, 1);
             }
             else if (st == 1)
             {
-                // crouching: always the held end pose of the crouch shot, aiming (chosen as the permanent crouch pose); no crouch run, which did not stop when he stopped
                 if (un && mv)
                 {
                     self setflaggedanimknobrestart("coop_pose", %crouchwalk_loop, 1, 0.2, 1);
                     t = int(getanimlength(%crouchwalk_loop) * 1000);
                 }
                 else if (un)
-                    self setflaggedanimknobrestart("coop_pose", %unarmed_crouch_idle1, 1, 0.2, 1);    // no weapon: hands down instead of aiming
+                    self setflaggedanimknobrestart("coop_pose", %unarmed_crouch_idle1, 1, 0.2, 1);
+                else if (ps)
+                    self setflaggedanimknobrestart("coop_pose", %pt_crouch_shoot_pistol, 1, 0.2, 1);
                 else
                     self setflaggedanimknobrestart("coop_pose", %crouch_shoot_straight, 1, 0.2, 1);
             }
@@ -1512,6 +1602,11 @@ coop_pose_move()
                     self setflaggedanimknobrestart("coop_pose", %unarmed_run_russian, 1, 0.2, 1);
                     t = int(getanimlength(%unarmed_run_russian) * 1000);
                 }
+                else if (ps)
+                {
+                    self setflaggedanimknobrestart("coop_pose", %combat_run_fast_pistol, 1, 0.2, 1);
+                    t = int(getanimlength(%combat_run_fast_pistol) * 1000);
+                }
                 else
                 {
                     self setflaggedanimknobrestart("coop_pose", %drone_run_forward_1, 1, 0.2, 1);
@@ -1520,6 +1615,8 @@ coop_pose_move()
             }
             else if (un)
                 self setflaggedanimknobrestart("coop_pose", %standunarmed_idle_loop, 1, 0.2, 1);
+            else if (ps)
+                self setflaggedanimknobrestart("coop_pose", %pt_stand_alert_pistol, 1, 0.2, 1);
             else
                 self setflaggedanimknobrestart("coop_pose", %stand_alert_2, 1, 0.2, 1);
             cur = key;
@@ -1704,6 +1801,22 @@ coop_precache_weapons()
     precacheItem("potato");
     precacheItem("stielhandgranate");
     level.coop_fx_rifle = loadfx("fx/muzzleflashes/rifleflash");
+    if (getcvar("mapname") == "libya" || getcvar("mapname") == "88ridge" || getcvar("mapname") == "tankhunt")
+    {
+        // The real tank effects. The impact one is chosen per mission, exactly as the game's own *_fx.gsc
+        // files do: tank_impact_libya on libya and on 88ridge (ridge88_fx.gsc), tank_impact_dirt on
+        // duhoc_assault, tank_impact_night on the night maps. A generic dirt impact everywhere looked grey
+        // where the host's shell kicks up yellow sand.
+        level.coop_fx_tankflash = loadfx("fx/muzzleflashes/cruisader_flash");
+        level.coop_fx_tankdust = loadfx("fx/dust/tank_dust_blowback_libya");
+        level.coop_fx_tankdist = loadfx("fx/distortion/distortion_tank_muzzleflash");
+        if (getcvar("mapname") == "libya" || getcvar("mapname") == "88ridge" || getcvar("mapname") == "ridge88")
+            level.coop_fx_tankhit = loadfx("fx/explosions/tank_impact_libya");
+        else if (getcvar("mapname") == "decoytown" || getcvar("mapname") == "decoytrenches")
+            level.coop_fx_tankhit = loadfx("fx/explosions/tank_impact_night");
+        else
+            level.coop_fx_tankhit = loadfx("fx/explosions/tank_impact_dirt");
+    }
     if (getcvar("mapname") == "libya" || getcvar("mapname") == "88ridge")
         precacheModel("xmodel/vehicle_crusader2_static");
     if (getcvar("mapname") != "duhoc_assault")
@@ -2004,6 +2117,20 @@ $coop = if ($Probe -eq 'puppet') { $puppetBody }
         elseif ($Probe -eq 'net7') { $net7Body }
         else { $probeBody }
 Write-Host "probe variant: $Probe"
+
+# Diagnostic lines ("COOPT shot ...", "COOPN ...") reach console.log through iprintln, which also prints them on the
+# player's screen. In the shipped mod they are silent: coop_dbg prints only when the test switch coop_debug is 1.
+if ($Probe -eq 'net7') {
+    $coop = $coop -replace 'iprintln\("COOP', 'coop_dbg("COOP'
+    $coop += @"
+
+coop_dbg(msg)
+{
+    if (getcvarint("coop_debug") == 1)
+        iprintln(msg);
+}
+"@
+}
 
 $final = $patched + $coop
 

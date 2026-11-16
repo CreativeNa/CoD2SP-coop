@@ -94,7 +94,7 @@ static int ReadPort(void) {
     return p;
 }
 
-#define BRIDGE_VERSION "cod2net5 0.7.4 (first public release)"
+#define BRIDGE_VERSION "cod2net5 0.7.6"
 #define BEACON_PORT 27202     // the host announces itself here (UDP broadcast); a guest in "auto" mode listens here
 #define BEACON_MAGIC "COD2COOP1"
 #define MENU_PORT 27201       // both players listen / send here when the in-game menu is used
@@ -493,10 +493,12 @@ static void ApplyMode(int mode, const char* ip) {
             strcpy(g_peerIp, "(auto: waiting for a host beacon)");
             g_peerAuto = 0; g_peerKnown = 0; g_peerPort = MENU_PORT; g_logPort = 0;
             OpenLogSink(NULL, 0);
+            int wasHost = (g_mode == 1) || !strcmp(g_lastHost, "127.0.0.1");                 // this very game was the host a moment ago (solo test): it is the host to join
             g_discover = 1;
             MenuEnable(2);
             LOGF("menu: JOIN auto - looking for a host on the network (beacons on UDP %d)%s%s", BEACON_PORT,
                  g_lastHost[0] ? "; fallback after 10 s: the last host " : "", g_lastHost);
+            if (wasHost) { LOGF("menu: JOIN auto: this game was the host / the last host is 127.0.0.1 (solo test): joining 127.0.0.1 now (a real beacon still wins)"); SetPeerJoin("127.0.0.1", 1); }
             return;
         }
         if (!ValidIPv4(ip)) { LOGF("menu: JOIN needs 'auto' or a valid IPv4 address of the host (a.b.c.d), got '%s'", ip); return; }
@@ -558,7 +560,8 @@ static DWORD WINAPI BEACON(LPVOID p) {
         struct sockaddr_in to; memset(&to, 0, sizeof to); to.sin_family = AF_INET; to.sin_port = htons(BEACON_PORT);
         for (int i = 0; i < n; i++) { to.sin_addr.s_addr = t[i]; sendto(s, msg, len, 0, (struct sockaddr*)&to, sizeof to); }
         if (!logged) { LOGF("host: announcing on the network (UDP %d, %d broadcast targets); a guest can click JOIN with 'auto'", BEACON_PORT, n); logged = 1; }
-        SleepQ(g_peerKnown ? 8000 : 2000);   // fast until a guest is seen, then a slow keep-alive for a late or returning guest
+        to.sin_addr.s_addr = htonl(INADDR_LOOPBACK); sendto(s, msg, len, 0, (struct sockaddr*)&to, sizeof to);   // a guest on this very PC (solo test)
+        SleepQ(g_peerKnown ? 1000 : 500);    // a guest that clicks JOIN again must find the host within a second (it was 8 s once a guest had been seen)
     }
     closesocket(s);
     return 0;
@@ -2201,6 +2204,10 @@ static void __cdecl H_coop_version(void) {              /* string coop_version()
     LOGF("script: coop_version() was called from GSC");
     E_AddString(BRIDGE_VERSION);
 }
+static void __cdecl H_coop_modver(void) {                /* string coop_modver() -> the version alone, e.g. "0.7.5" */
+    const char* s = strchr(BRIDGE_VERSION, ' ');
+    E_AddString(s ? s + 1 : BRIDGE_VERSION);
+}
 static void __cdecl H_coop_ping(void) {                 /* int coop_ping(int n) -> n + 1: proves parameters in and a result out */
     int count = *(volatile int*)(ULONG_PTR)E_PARAMCOUNT;
     int v = count >= 1 ? E_GetInt(0) : 0;                /* read first, push after */
@@ -2214,6 +2221,7 @@ __declspec(dllexport) void __cdecl CoopInit(const CoopApi* api) {
     if (!api || api->version != 1) { LOGF("script built-ins: unknown CoopApi version, none registered"); return; }
     int a = api->RegisterFunction("coop_version", H_coop_version);
     int b = api->RegisterFunction("coop_ping", H_coop_ping);
+    api->RegisterFunction("coop_modver", H_coop_modver);
     int c = api->RegisterFunction("coop_publish_state", H_coop_publish);
     int d = api->RegisterFunction("coop_peer_state", H_coop_peer_state);
     int e = api->RegisterFunction("coop_peer_yaw", H_coop_peer_yaw);

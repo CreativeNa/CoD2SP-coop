@@ -117,7 +117,7 @@ function Update-HudMenu([string]$t) {
     $ms = $t.LastIndexOf('menuDef', $m.Index, [StringComparison]::Ordinal)
     $me = Get-BlockEnd $t $t.IndexOf('{', $ms)
     function Item([string]$name, [string]$extra, [string]$rect) {
-        return "`t`titemDef`n`t`t{`n`t`t`tname `"$name`"`n`t`t`trect $rect`n`t`t`ttextscale .32`n`t`t`ttextstyle ITEM_TEXTSTYLE_SHADOWED`n`t`t`ttextalign 0`n`t`t`ttextaligny 12`n`t`t`tdecoration`n`t`t`tvisible MENU_TRUE`n$extra`t`t}`n"
+        return "`t`titemDef`n`t`t{`n`t`t`tname `"$name`"`n`t`t`trect $rect`n`t`t`ttextscale .32`n`t`t`ttextstyle ITEM_TEXTSTYLE_SHADOWED`n`t`t`ttextalign 2`n`t`t`ttextaligny 12`n`t`t`tdecoration`n`t`t`tvisible MENU_TRUE`n$extra`t`t}`n"
     }
     $on = "`t`t`tdvartest `"coop_partner_on`"`n`t`t`tshowdvar { `"1`" }`n"
     $label = Item 'coop_partner_label' ("`t`t`ttext `"@COOP_PARTNER`"`n`t`t`tforecolor .85 .85 .85 1`n" + $on) '150 112 70 14'
@@ -150,6 +150,24 @@ function Invoke-PatchMenu([string]$Game, [string]$Out, [bool]$MainOnly = $false,
     [IO.File]::WriteAllText((Join-Path $ui 'main.menu'), (Update-MainMenu (Read-StockMenu $Game 'ui/main.menu') (-not $MainOnly)), $script:L1)
     [IO.File]::WriteAllText((Join-Path $ui 'hud.menu'), (Update-HudMenu (Read-StockMenu $Game 'ui/hud.menu')), $script:L1)
     [IO.File]::WriteAllText((Join-Path $ui 'menus.txt'), (Update-MenusTxt (Read-StockMenu $Game 'ui/menus.txt')), $script:L1)
-    Copy-Item $CoopMenu (Join-Path $ui 'coop.menu') -Force
+    # the version line in the bottom right corner: game version | mod version (the engine label is hidden so the
+    # two numbers read as one line). The mod version comes from coop_mod_version.txt written by the installer.
+    $ver = 'dev'
+    $vf = Join-Path $Game 'coop_mod_version.txt'
+    if (Test-Path $vf) { $ver = (Get-Content $vf -Raw).Trim() }
+    $verLine = "1.2 | $ver"
+    $cm = [IO.File]::ReadAllText($CoopMenu)
+    $cm = $cm.Replace('__COOPVER__', $verLine)
+    [IO.File]::WriteAllText((Join-Path $ui 'coop.menu'), $cm, $script:L1)
+    $mmPath = Join-Path $ui 'main.menu'
+    $mm = [IO.File]::ReadAllText($mmPath)
+    $mm = $mm.Replace('setdvar ui_version_show "1";', 'setdvar ui_version_show "0";')
+    $verItem = "`t`titemDef`n`t`t{`n`t`t`tname `"coop_verline`"`n`t`t`trect 590 470 155 12`n`t`t`ttype ITEM_TYPE_TEXT`n`t`t`ttext `"$verLine`"`n`t`t`ttextscale .22`n`t`t`ttextstyle ITEM_TEXTSTYLE_SHADOWED`n`t`t`ttextalign 2`n`t`t`ttextalignx 155`n`t`t`ttextaligny 10`n`t`t`tforecolor .7 .7 .65 1`n`t`t`tdecoration`n`t`t`tvisible 1`n`t`t}`n"
+    # it must go into main_text: that is the menu that draws the list, and it is loaded after "main", so anything
+    # put into "main" is covered by it. Insert at the end of the main_text block so it is drawn last.
+    $first = $mm.IndexOf('menuDef')                      # menuDef "main"
+    $mdOpen = $mm.IndexOf('menuDef', $first + 6)         # the next one is menuDef "main_text"
+    $anchor = Get-BlockEnd $mm $mm.IndexOf('{', $mdOpen)
+    [IO.File]::WriteAllText($mmPath, $mm.Substring(0, $anchor) + $verItem + "`t" + $mm.Substring($anchor), $script:L1)
     Write-Host "menu patched -> $Out"
 }

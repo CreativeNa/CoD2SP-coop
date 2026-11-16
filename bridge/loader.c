@@ -30,7 +30,7 @@
 #include <stdlib.h>
 
 static void usage(void) {
-    printf("usage: loader.exe --process <name.exe> --dll <path> [--wait] [--timeout N]\n");
+    printf("usage: loader.exe (--process <name.exe> | --pid <pid>) --dll <path> [--wait] [--timeout N]\n");
 }
 
 static DWORD find_pid(const char *exe) {
@@ -66,6 +66,7 @@ static int target_is_32(DWORD pid) {
 
 int main(int argc, char **argv) {
     const char *exe = NULL, *dllArg = NULL;
+    DWORD pidArg = 0;
     int wait = 0, timeout = 60;
 
     for (int i = 1; i < argc; i++) {
@@ -73,16 +74,18 @@ int main(int argc, char **argv) {
         else if (!_stricmp(argv[i], "--dll") && i + 1 < argc) dllArg = argv[++i];
         else if (!_stricmp(argv[i], "--wait")) wait = 1;
         else if (!_stricmp(argv[i], "--timeout") && i + 1 < argc) timeout = atoi(argv[++i]);
+        else if (!_stricmp(argv[i], "--pid") && i + 1 < argc) pidArg = (DWORD)strtoul(argv[++i], NULL, 10);
         else { usage(); return 2; }
     }
-    if (!exe || !dllArg) { usage(); return 2; }
+    if ((!exe && !pidArg) || !dllArg) { usage(); return 2; }
 
     char dll[MAX_PATH];
     if (!GetFullPathNameA(dllArg, sizeof dll, dll, NULL)) { printf("bad dll path\n"); return 2; }
 
-    DWORD pid = 0;
+    DWORD pid = pidArg;
+    if (pid) { printf("using pid %lu (skipping process enumeration)\n", (unsigned long)pid); }
     int waited = 0;
-    for (;;) {
+    while (!pid) {
         pid = find_pid(exe);
         if (pid) break;
         if (!wait || waited >= timeout) { printf("%s not found\n", exe); return 3; }

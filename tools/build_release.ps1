@@ -23,7 +23,7 @@ $candidates = @(($id.install_default -replace 'Call of Duty 2$', 'Call of Duty 2
 $stock = $candidates | Where-Object { (Test-Path (Join-Path $_ 'main\iw_00.iwd')) -and -not (Get-ChildItem (Join-Path $_ 'main') -Filter 'zz_coop*.iwd' -ErrorAction SilentlyContinue) } | Select-Object -First 1
 if (-not $stock) { throw "no game folder without a zz_coop archive found to take the stock moscow.gsc from" }
 $exeHash = (Get-FileHash (Join-Path $stock $id.exe_name) -Algorithm SHA256).Hash
-if ($exeHash -ne $id.exe_sha256) { throw "stock folder exe hash mismatch: $exeHash" }
+if ($exeHash -ne $id.exe_sha256 -and $exeHash -ne $id.retail_exe_sha256) { throw "stock folder exe hash mismatch: $exeHash" }
 $scratch = Join-Path $env:TEMP 'cod2coop-release-mod'
 Remove-Item $scratch -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force (Join-Path $scratch 'main') | Out-Null

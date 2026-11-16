@@ -34,6 +34,33 @@ LANG_ENGLISH       "Mouse:"
 REFERENCE           RAW
 LANG_ENGLISH       "RAW INPUT"
 
+REFERENCE           EXPL_TITLE
+LANG_ENGLISH       "EXPLANATIONS"
+
+REFERENCE           INFO_TITLE
+LANG_ENGLISH       "Information"
+
+REFERENCE           EXP1
+LANG_ENGLISH       "HOST - create a session and wait for the guest"
+
+REFERENCE           EXP2
+LANG_ENGLISH       "JOIN - connect to the host by its address"
+
+REFERENCE           EXP3
+LANG_ENGLISH       "STOP - end the session and disconnect"
+
+REFERENCE           EXP5
+LANG_ENGLISH       "Address - the host IP; auto finds it on the network"
+
+REFERENCE           EXP6
+LANG_ENGLISH       "Window - borderless fullscreen or a normal window"
+
+REFERENCE           EXP7
+LANG_ENGLISH       "Mouse - raw input (no lag) or the normal cursor"
+
+REFERENCE           EXP8
+LANG_ENGLISH       "Mission - the guest follows the host or starts itself"
+
 REFERENCE           HINT3
 LANG_ENGLISH       "Host starts any mission, guest follows by itself. Log: coop5.log."
 

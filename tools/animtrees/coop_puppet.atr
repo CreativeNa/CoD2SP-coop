@@ -49,13 +49,13 @@ jump_across_100
 jump_down_56
 stand_alert_1
 stand_alert_2
-stand_alert_3
+prone_shoot_auto_straight
 prone_aim_idle
 prone_crawl
-crouchrun_loop_forward_1
+stand_alert_3
 duhoc_climber_dismount
 prone_shoot_straight
-prone_shoot_auto_straight
+crouchrun_loop_forward_1
 stand_grenade_throw
 crouch_grenade_throw
 standunarmed_idle_loop
@@ -63,3 +63,9 @@ unarmed_run_russian
 unarmed_crouch_idle1
 wounded_crawlidle
 crouchwalk_loop
+pt_stand_alert_pistol
+combat_run_fast_pistol
+pt_crouch_shoot_pistol
+pt_prone_shoot_pistol
+pt_reload_stand_pistol
+pt_reload_crouch_pistol
