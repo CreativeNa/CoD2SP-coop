@@ -2,7 +2,7 @@
 
 ## English
 
-**Verify the download.** In PowerShell: `Get-FileHash .\CoD2Coop-0.7.4.zip -Algorithm SHA256` and compare with the table in
+**Verify the download.** In PowerShell: `Get-FileHash .\CoD2Coop-0.7.7.zip -Algorithm SHA256` and compare with the table in
 [ANTIVIRUS.md](ANTIVIRUS.md) (zip, `CoD2Coop.exe`, and the two DLLs that the installer writes into the game folder). `CoD2Coop.exe.sha256`
 inside the zip holds the hash of the exe.
 
@@ -14,11 +14,11 @@ your own game files by the PowerShell scripts embedded in the exe (`tools/make_m
 So a local build is verified by its behaviour and by `CoD2Coop.exe check`, not by the hash. See [BUILD.md](BUILD.md).
 
 **After installation** `CoD2Coop.exe check` prints the version of the installed mod (`coop_mod_version.txt`), the state of the autoload and
-whether the game is running. The first line of `coop5.log` shows the bridge version (`cod2net5 0.7.4 …`).
+whether the game is running. The first line of `coop5.log` shows the bridge version (`cod2net5 0.7.7 …`).
 
 ## Русский
 
-**Проверка загрузки.** В PowerShell: `Get-FileHash .\CoD2Coop-0.7.4.zip -Algorithm SHA256` и сравнить с таблицей в
+**Проверка загрузки.** В PowerShell: `Get-FileHash .\CoD2Coop-0.7.7.zip -Algorithm SHA256` и сравнить с таблицей в
 [ANTIVIRUS.md](ANTIVIRUS.md) (архив, `CoD2Coop.exe` и две DLL, которые установщик пишет в папку игры). В архиве `CoD2Coop.exe.sha256`
 содержит хеш exe.
 
@@ -30,4 +30,4 @@ PowerShell-скриптами, встроенными в exe (`tools/make_mod.ps
 Поэтому локальную сборку проверяют по поведению и по `CoD2Coop.exe check`, а не по хешу. См. [BUILD.md](BUILD.md).
 
 **После установки** `CoD2Coop.exe check` показывает версию установленного мода (`coop_mod_version.txt`), состояние автозагрузки и
-запущена ли игра. Первая строка `coop5.log` показывает версию моста (`cod2net5 0.7.4 …`).
+запущена ли игра. Первая строка `coop5.log` показывает версию моста (`cod2net5 0.7.7 …`).

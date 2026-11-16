@@ -1,4 +1,4 @@
-# Known issues / Известные проблемы (0.7.4)
+# Known issues / Известные проблемы (0.7.7)
 
 Nothing here stops the game. / Ничто из этого не мешает игре.
 

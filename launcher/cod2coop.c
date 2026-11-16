@@ -37,7 +37,7 @@
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "iphlpapi.lib")
 
-#define VERSION "0.7.6"
+#define VERSION "0.7.7"
 #define GAME_EXE "CoD2SP_s.exe"
 #define GAME_SHA256 "AB17A89CC3722AE80EDC1F4483CACBCAE08B0373B9128FE4EC053EBC79062281"            /* the Steam build */
 #define GAME_SHA256_RETAIL "64E7ADCA30F5C25A858BB537932C7041D4588A0554BBB917B8E25AC43A0E5A48"     /* the retail v1.3 exe (25980416 bytes): the guest PC runs the co-op on it */

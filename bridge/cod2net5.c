@@ -94,7 +94,7 @@ static int ReadPort(void) {
     return p;
 }
 
-#define BRIDGE_VERSION "cod2net5 0.7.6"
+#define BRIDGE_VERSION "cod2net5 0.7.7"
 #define BEACON_PORT 27202     // the host announces itself here (UDP broadcast); a guest in "auto" mode listens here
 #define BEACON_MAGIC "COD2COOP1"
 #define MENU_PORT 27201       // both players listen / send here when the in-game menu is used

@@ -60,7 +60,7 @@ Use the issue form of this repository.
 | [ANTIVIRUS.md](docs/ANTIVIRUS.md) | false positives, exclusions, hashes |
 | [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | common errors |
 | [BUGS.md](docs/BUGS.md) | known issues |
-| [releases/0.7.4.md](docs/releases/0.7.4.md) | notes for the current build |
+| [releases/0.7.7.md](docs/releases/0.7.7.md) | notes for the current build |
 | [RELEASE_INTEGRITY.md](docs/RELEASE_INTEGRITY.md) | how to verify the build and hashes |
 | [AI_TRIAGE.md](docs/AI_TRIAGE.md) | what is read in a report and how it is triaged |
 | [BUILD.md](docs/BUILD.md) | build from source |
@@ -136,7 +136,7 @@ trucks, planes and boats are not.
 | [ANTIVIRUS.md](docs/ANTIVIRUS.md) | ложные срабатывания, исключения, хеши |
 | [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | типичные ошибки |
 | [BUGS.md](docs/BUGS.md) | известные проблемы |
-| [releases/0.7.4.md](docs/releases/0.7.4.md) | заметки к текущей сборке |
+| [releases/0.7.7.md](docs/releases/0.7.7.md) | заметки к текущей сборке |
 | [RELEASE_INTEGRITY.md](docs/RELEASE_INTEGRITY.md) | как проверить сборку и хеши |
 | [AI_TRIAGE.md](docs/AI_TRIAGE.md) | что читается в отчёте и как он разбирается |
 | [BUILD.md](docs/BUILD.md) | сборка из исходников |
