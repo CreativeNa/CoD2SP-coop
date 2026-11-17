@@ -49,7 +49,8 @@ static volatile float g_peer[4];
 static volatile LONG  g_helloMs;           /* GetTickCount of the last hello ("H 1") from a guest that has not started a mission yet */
 static volatile LONG  g_mute;              /* debug: while the file coop_mute.txt exists, peer packets are not shown to the script (tests the disconnect path) */
 /* Enemy kill events (script channel): the script reports each enemy death with its position, the peer kills the nearest enemy there. */
-typedef struct { float p[3]; LONG id; } KillEv;
+typedef struct { float p[3]; LONG id; char key[32]; } KillEv;
+static char g_lastKillKey[32];                                             /* the key of the kill event popped last (coop_kill_key) */
 static KillEv g_kIn[16]; static volatile LONG g_kInHead, g_kInTail;    /* received, waiting for the script */
 static volatile LONG g_kSeq;                                           /* our outgoing ids */
 static LONG g_kSeen[32]; static int g_kSeenN;                          /* ids already accepted (the sender sends each event twice) */
@@ -683,9 +684,17 @@ static DWORD WINAPI UDP(LPVOID p) {
                     g_kSeen[g_kSeenN++ & 31] = kid;
                     LONG h = g_kInHead;
                     if (h - g_kInTail < 16) {
-                        KillEv* e = &g_kIn[h & 15]; e->p[0] = kx; e->p[1] = ky; e->p[2] = kz; e->id = kid;
+                        KillEv* e = &g_kIn[h & 15]; e->p[0] = kx; e->p[1] = ky; e->p[2] = kz; e->id = kid; e->key[0] = 0;
+                        {   /* an optional key of the killed character ("K x y z id key"): letters, digits and "_" only */
+                            const char* kp = b + 2; int sp = 0;
+                            while (*kp && sp < 4) { if (*kp == ' ') sp++; kp++; }
+                            int n = 0;
+                            if (sp >= 4) for (; *kp && n < 30; kp++) { if ((*kp >= 'a' && *kp <= 'z') || (*kp >= 'A' && *kp <= 'Z') || (*kp >= '0' && *kp <= '9') || *kp == '_') e->key[n++] = *kp; else break; }
+                            e->key[n] = 0;
+                        }
                         g_kInHead = h + 1;
-                        LOGF("kill event received #%ld at %.0f %.0f %.0f", kid, kx, ky, kz);
+                        if (e->key[0]) LOGF("kill event received #%ld at %.0f %.0f %.0f key %s", kid, kx, ky, kz, e->key);
+                        else LOGF("kill event received #%ld at %.0f %.0f %.0f", kid, kx, ky, kz);
                     }
                 }
             }
@@ -2289,13 +2298,34 @@ static void __cdecl H_coop_send_kill(void) {            /* coop_send_kill(origin
         LOGF("kill event sent #%ld at %.0f %.0f %.0f", (long)id, o[0], o[1], o[2]);
     } else LOGF("kill event #%ld NOT sent (no peer yet)", (long)id);
 }
+static void __cdecl H_coop_send_kill_key(void) {        /* coop_send_kill_key(origin, key): like coop_send_kill, plus the key of the killed character (test switch coop_keykill) */
+    int count = *(volatile int*)(ULONG_PTR)E_PARAMCOUNT;
+    if (count < 2) return;
+    float o[3]; char key[40] = "";
+    E_GetVector(0, o);
+    if (!E_GetStringCopy(1, key, sizeof key)) key[0] = 0;
+    { char* q; for (q = key; *q; q++) if (!((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') || (*q >= '0' && *q <= '9') || *q == '_')) { *q = 0; break; } }
+    if (strlen(key) > 30) key[30] = 0;
+    LONG id = InterlockedIncrement(&g_kSeq);
+    char pkt[112];
+    int len = key[0] ? _snprintf(pkt, sizeof pkt - 1, "K %.1f %.1f %.1f %ld %s", o[0], o[1], o[2], (long)id, key) : _snprintf(pkt, sizeof pkt - 1, "K %.1f %.1f %.1f %ld", o[0], o[1], o[2], (long)id);
+    if (len > 0 && g_peerKnown && g_udpSock != INVALID_SOCKET) {
+        struct sockaddr_in to; memset(&to, 0, sizeof to);
+        to.sin_family = AF_INET; to.sin_addr.s_addr = g_peerAddr; to.sin_port = htons((u_short)g_peerPort);
+        sendto(g_udpSock, pkt, len, 0, (struct sockaddr*)&to, sizeof to);
+        sendto(g_udpSock, pkt, len, 0, (struct sockaddr*)&to, sizeof to);
+        LOGF("kill event sent #%ld at %.0f %.0f %.0f key %s", (long)id, o[0], o[1], o[2], key[0] ? key : "-");
+    } else LOGF("kill event #%ld NOT sent (no peer yet)", (long)id);
+}
 static void __cdecl H_coop_kill_count(void) { E_AddInt((int)(g_kInHead - g_kInTail)); }       /* int coop_kill_count(): received kills waiting */
 static void __cdecl H_coop_pop_kill(void) {                                                    /* vector coop_pop_kill(): the oldest one */
     float v[3] = { 0, 0, 0 };
     LONG t = g_kInTail;
-    if (g_kInHead - t > 0) { KillEv* e = &g_kIn[t & 15]; v[0] = e->p[0]; v[1] = e->p[1]; v[2] = e->p[2]; g_kInTail = t + 1; }
+    g_lastKillKey[0] = 0;
+    if (g_kInHead - t > 0) { KillEv* e = &g_kIn[t & 15]; v[0] = e->p[0]; v[1] = e->p[1]; v[2] = e->p[2]; strcpy(g_lastKillKey, e->key); g_kInTail = t + 1; }
     E_AddVector(v);
 }
+static void __cdecl H_coop_kill_key(void) { E_AddString(g_lastKillKey); }                      /* string coop_kill_key(): the key of the kill event popped last, or "" */
 static void __cdecl H_coop_pending_level(void) {        /* string coop_pending_level(): a requested level name, or "" */
     char nm[40];
     EnterCriticalSection(&L); strcpy(nm, g_pendLevel); g_pendLevel[0] = 0; LeaveCriticalSection(&L);
@@ -2395,6 +2425,8 @@ __declspec(dllexport) void __cdecl CoopInit(const CoopApi* api) {
     api->RegisterFunction("coop_log", H_coop_log);
     int kc = api->RegisterFunction("coop_kill_count", H_coop_kill_count);
     int kp = api->RegisterFunction("coop_pop_kill", H_coop_pop_kill);
+    api->RegisterFunction("coop_send_kill_key", H_coop_send_kill_key);
+    api->RegisterFunction("coop_kill_key", H_coop_kill_key);
     LOGF("script built-ins registered (coop_version %s, coop_ping %s, publish %s, peer_state %s, peer_yaw %s, peer_seq %s, peer_stance %s, peer_event %s, peer_solo %s, peer_weapon %s, kill built-ins %s); engine lookup hooks %s",
          a ? "ok" : "FAILED", b ? "ok" : "FAILED", c ? "ok" : "FAILED", d ? "ok" : "FAILED", e ? "ok" : "FAILED", f ? "ok" : "FAILED", g ? "ok" : "FAILED", h ? "ok" : "FAILED", k ? "ok" : "FAILED", w ? "ok" : "FAILED", (ks && kc && kp) ? "ok" : "FAILED", api->hooksInstalled ? "installed" : "NOT installed: scripts cannot see them");
 }

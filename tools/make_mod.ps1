@@ -1032,9 +1032,16 @@ coop_fake_grenade(name, st, vel)
     // the throw animation of the puppet needs a moment to bring the arm forward: the grenade leaves the hand later than the event arrives
     wait 0.45;
     mdl = getweaponmodel(name);
+    if (smoke)
+        mdl = "xmodel/projectile_us_smoke_grenade";
     ent = spawn("script_model", st);
     if (isdefined(mdl))
         ent setmodel(mdl);
+    // diagnostics of the smoke-grenade spin bug (coop_debug 1): weapon, model, start and where it comes to rest
+    if (isdefined(mdl))
+        coop_dbg("COOPG fake " + name + " model " + mdl + " smoke=" + smoke + " start " + st + " vel " + vel);
+    else
+        coop_dbg("COOPG fake " + name + " has no weapon model, smoke=" + smoke);
     pos = st;
     v = vel;
     rest = 0;
@@ -1059,6 +1066,7 @@ coop_fake_grenade(name, st, vel)
             {
                 rest = 1;
                 v = (0, 0, 0);
+                coop_dbg("COOPG " + name + " at rest after " + t + " s at " + pos + " angles " + ent.angles);
             }
         }
         else
@@ -1072,19 +1080,32 @@ coop_fake_grenade(name, st, vel)
         ent delete();
         return;
     }
-    ent playsound("grenade_explode_default");
+    coop_dbg("COOPG " + name + " ends after " + t + " s, rest=" + rest + ", angles " + ent.angles);
+    if (smoke)
+        ent playsound("smokegrenade_explode_default");
+    else
+        ent playsound("grenade_explode_default");
     if (smoke)
     {
         if (isdefined(level.coop_fx_smoke))
             playfx(level.coop_fx_smoke, pos);
+        if (isdefined(level.coop_fx_smoke2))
+            playfx(level.coop_fx_smoke2, pos);
     }
     else
     {
-        if (isdefined(level.coop_fx_boom))
+        gs = bullettrace(pos + (0, 0, 24), pos - (0, 0, 40), false, undefined);
+        surf = "";
+        if (isdefined(gs["surfacetype"]))
+            surf = gs["surfacetype"];
+        coop_dbg("COOPG explosion surface='" + surf + "' at " + pos);
+        if (isdefined(level.coop_fx_boom_hard) && (surf == "asphalt" || surf == "concrete" || surf == "brick" || surf == "rock" || surf == "metal" || surf == "plaster"))
+            playfx(level.coop_fx_boom_hard, pos);
+        else if (isdefined(level.coop_fx_boom))
             playfx(level.coop_fx_boom, pos);
         else if (isdefined(level.coop_fx_rifle))
             playfx(level.coop_fx_rifle, pos, (0, 0, 1));
-        earthquake(0.4, 0.8, pos, 500);
+        earthquake(0.25, 0.6, pos, 400);
         ai = getaiarray("axis");
         for (i = 0; i < ai.size; i++)
         {
@@ -1816,7 +1837,14 @@ coop_precache_weapons()
     if (getcvar("mapname") != "duhoc_assault")
     {
         level.coop_fx_boom = loadfx("fx/explosions/grenadeExp_dirt");
-        level.coop_fx_smoke = loadfx("fx/smoke/grenade_smoke");
+        level.coop_fx_boom_hard = loadfx("fx/explosions/grenadeExp_blacktop");   // the real grenade picks its effect by the surface: asphalt is smaller than the dirt cloud
+        // the effect the real smoke grenade plays (projExplosionEffect of weapons/sp/smoke_grenade_*): one per nationality, only the one that is needed
+        if (gk == "british_a" || gk == "british_n")
+            level.coop_fx_smoke = loadfx("fx/props/brit_smoke_grenade");
+        else
+            level.coop_fx_smoke = loadfx("fx/props/american_smoke_grenade");
+        // the darker body of the smoke (gfx_dark_smoke_atlas): the owner found the cloud too light with the props effect alone
+        level.coop_fx_smoke2 = loadfx("fx/explosions/smoke_grenade");
     }
     if (gk == "british_a" || gk == "british_n")
         precacheItem("smoke_grenade_british");
@@ -1824,6 +1852,8 @@ coop_precache_weapons()
         precacheItem("smoke_grenade_russian");
     else
         precacheItem("smoke_grenade_american");
+    // the flying copy of the partner's smoke grenade uses the model of the real thrown one (the weapon model kept spinning after the landing)
+    precacheModel("xmodel/projectile_us_smoke_grenade");
     // ONE flash effect only: a level has a small, fixed number of effect slots (duhoc_assault ran out of them with three: "G_FindConfigstringIndex: overflow")
     level.coop_weps = [];
     level.coop_weps[0] = "mosin_nagant";
@@ -2306,17 +2336,84 @@ coop_level_watch()
     }
 }
 
+coop_key_alias(k)
+{
+    // downtown_sniper: the enemy sniper stands in one of five windows, chosen at random on EACH PC (script_noteworthy building1_floor1 on one PC,
+    // building2_floor3 on the other); the five names mean the same character, so they share one key
+    if (k == "building1_floor1" || k == "building1_floor2" || k == "building1_floor3" || k == "building2_floor1" || k == "building2_floor3")
+        return "enemy_sniper";
+    return k;
+}
+
+coop_npc_key(e)
+{
+    // the name a script gives a single character (script_noteworthy of its spawner, else the targetname); "" = none
+    k = "";
+    if (isdefined(e.script_noteworthy))
+        k = e.script_noteworthy;
+    else if (isdefined(e.targetname))
+        k = e.targetname;
+    return coop_key_alias(k);
+}
+
+coop_key_seen(k, e)
+{
+    // diagnostics of the kill-by-key test: every distinct key is written once to coop5.log
+    if (k == "" || isdefined(level.coop_kseen[k]))
+        return;
+    level.coop_kseen[k] = 1;
+    tn = "-";
+    sn = "-";
+    an = "-";
+    if (isdefined(e.targetname))
+        tn = e.targetname;
+    if (isdefined(e.script_noteworthy))
+        sn = e.script_noteworthy;
+    if (isdefined(e.animname))
+        an = e.animname;
+    coop_dbg("COOPKEY seen key=" + k + " targetname=" + tn + " script_noteworthy=" + sn + " animname=" + an);
+}
+
+coop_key_pending_hit(e, k)
+{
+    // a kill-by-key that arrived before this character was spawned here: it dies as soon as it appears (60 s at most)
+    for (j = 0; j < level.coop_kpend.size; j++)
+    {
+        if (level.coop_kpend[j] == k && gettime() - level.coop_kpendt[j] < 60000)
+        {
+            level.coop_kpend[j] = "";
+            e.coop_remote = true;
+            e dodamage(e.health + 500, e.origin);
+            coop_dbg("COOPKEY pending kill applied at its spawn: " + k);
+            return;
+        }
+    }
+}
+
 coop_enemy_watch()
 {
     while (!isdefined(level.player))
         wait 0.1;
     ents = [];
     poss = [];
+    keys = [];
+    level.coop_keymax = [];
+    level.coop_kseen = [];
+    if (!isdefined(level.coop_kpend))
+    {
+        level.coop_kpend = [];
+        level.coop_kpendt = [];
+    }
     for (;;)
     {
         wait 0.25;
+        // test switch: kill events of single named characters carry their key (coop_keykill "on" on BOTH PCs)
+        kon = 0;
+        if (getcvar("coop_keykill") == "on")
+            kon = 1;
         ne = [];
         np = [];
+        nk = [];
         for (i = 0; i < ents.size; i++)
         {
             e = ents[i];
@@ -2324,23 +2421,53 @@ coop_enemy_watch()
             {
                 ne[ne.size] = e;
                 np[np.size] = e.origin;
+                nk[nk.size] = keys[i];
             }
             else if (isdefined(e))
             {
                 if (!isdefined(e.coop_remote))
-                    coop_send_kill(poss[i]);
+                {
+                    k = keys[i];
+                    // only a key that never had two living characters at once is a single character (a crowd shares its key)
+                    if (kon && k != "" && isdefined(level.coop_keymax[k]) && level.coop_keymax[k] == 1)
+                        coop_send_kill_key(poss[i], k);
+                    else
+                        coop_send_kill(poss[i]);
+                }
             }
         }
         ents = ne;
         poss = np;
+        keys = nk;
         ai = getaiarray("axis");
+        cnt = [];
         for (i = 0; i < ai.size; i++)
         {
+            k = coop_npc_key(ai[i]);
+            if (k != "")
+            {
+                if (!isdefined(cnt[k]))
+                    cnt[k] = 0;
+                cnt[k] = cnt[k] + 1;
+            }
+        }
+        for (i = 0; i < ai.size; i++)
+        {
+            k = coop_npc_key(ai[i]);
+            if (k != "" && (!isdefined(level.coop_keymax[k]) || cnt[k] > level.coop_keymax[k]))
+                level.coop_keymax[k] = cnt[k];
             if (!isdefined(ai[i].coop_tracked))
             {
                 ai[i].coop_tracked = true;
                 ents[ents.size] = ai[i];
                 poss[poss.size] = ai[i].origin;
+                keys[keys.size] = k;
+                if (kon)
+                {
+                    coop_key_seen(k, ai[i]);
+                    if (k != "")
+                        coop_key_pending_hit(ai[i], k);
+                }
             }
         }
     }
@@ -2350,6 +2477,11 @@ coop_kill_recv()
 {
     while (!isdefined(level.player))
         wait 0.1;
+    if (!isdefined(level.coop_kpend))
+    {
+        level.coop_kpend = [];
+        level.coop_kpendt = [];
+    }
     for (;;)
     {
         wait 0.1;
@@ -2357,7 +2489,41 @@ coop_kill_recv()
         while (n > 0)
         {
             v = coop_pop_kill();
+            kk = coop_kill_key();
             n = n - 1;
+            kon = 0;
+            if (getcvar("coop_keykill") == "on")
+                kon = 1;
+            if (kon && kk != "")
+            {
+                // test: the kill names a single character: kill the living one with that key here (no distance, no position fallback)
+                hits = 0;
+                hit = undefined;
+                ai = getaiarray("axis");
+                for (i = 0; i < ai.size; i++)
+                {
+                    if (coop_npc_key(ai[i]) == kk)
+                    {
+                        hits++;
+                        hit = ai[i];
+                    }
+                }
+                if (hits == 1)
+                {
+                    hit.coop_remote = true;
+                    hit dodamage(hit.health + 500, v);
+                    coop_dbg("COOPKEY kill by key applied: " + kk);
+                }
+                else if (hits == 0)
+                {
+                    level.coop_kpend[level.coop_kpend.size] = kk;
+                    level.coop_kpendt[level.coop_kpendt.size] = gettime();
+                    coop_dbg("COOPKEY kill by key waits, nobody with this key is alive here yet: " + kk);
+                }
+                else
+                    coop_dbg("COOPKEY kill by key ambiguous here (" + hits + " alive with this key), nothing killed: " + kk);
+                continue;
+            }
             radius = 220;
             test = 0;
             if (v[0] == 0 && v[1] == 0 && v[2] == 0)
