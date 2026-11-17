@@ -1935,7 +1935,15 @@ BOOL APIENTRY DllMain(HMODULE m, DWORD r, LPVOID x) {
             WIN32_FILE_ATTRIBUTE_DATA fa; DWORD sz = 0;
             char ex[MAX_PATH]; GetModuleFileNameA(NULL, ex, MAX_PATH);   // only the size is logged, never the path
             if (GetFileAttributesExA(ex, GetFileExInfoStandard, &fa)) sz = fa.nFileSizeLow;
-            LOGF("=== %s, built %s %s, game exe %lu bytes, pid %lu ===", BRIDGE_VERSION, __DATE__, __TIME__, sz, GetCurrentProcessId());
+            unsigned long gcrc = 0; int gcrcOk = 0;                      // CRC-32 of the exe (identifies the build in a log; the installer checks SHA-256)
+            if (sz && sz < 40u * 1024u * 1024u) {
+                FILE* gf = fopen(ex, "rb");
+                unsigned char* gb = gf ? (unsigned char*)malloc(sz) : NULL;
+                if (gb && fread(gb, 1, sz, gf) == sz) { gcrc = Crc32Buf(gb, sz); gcrcOk = 1; }
+                free(gb); if (gf) fclose(gf);
+            }
+            const char* gtag = (sz == 662528 && gcrcOk && gcrc == 0xB274602Eul) ? "the Steam build" : (sz == 25980416) ? "size of the retail 1.3 build" : "NOT a build we know: the engine hooks may not apply (see the proxy's 'script hooks' lines)";
+            LOGF("=== %s, built %s %s, game exe %lu bytes, crc32 %08lX (%s), pid %lu ===", BRIDGE_VERSION, __DATE__, __TIME__, sz, gcrc, gtag, GetCurrentProcessId());
         }
         ReadPeer();
         int pf = ReadPort();
