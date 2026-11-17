@@ -481,11 +481,13 @@ static int cmd_install(Opt* o) {
     if (!dir_exists(main_)) { printf("  no main folder in %s\n", o->game); return 1; }
     join(iwd, sizeof iwd, main_, "zz_coop.iwd");
     { DWORD pidsG[4]; if (find_game_pids(o->game, pidsG, 4)) { printf("  the game is running: close it first (it keeps the archive open).\n"); return 1; } }
+    /* the version file goes first: the menu builder reads it for the version line (a first install used to print "dev") */
+    char vfile[MAX_PATH]; join(vfile, sizeof vfile, o->game, "coop_mod_version.txt"); write_file(vfile, VERSION, strlen(VERSION));
     if (!build_mod_iwd(o->game, iwd)) {
         printf("  could not build or write %s. If the game is running, close it first.\n", iwd);
+        DeleteFileA(vfile);
         return 1;
     }
-    { char vf[MAX_PATH]; join(vf, sizeof vf, o->game, "coop_mod_version.txt"); write_file(vf, VERSION, strlen(VERSION)); }
     printf("  mod installed: main\\zz_coop.iwd (built from your own game files). Remove it any time with 'uninstall'.\n");
     {
         static const char* langs[6] = { "English", "French", "German", "Italian", "Spanish", "Russian" };

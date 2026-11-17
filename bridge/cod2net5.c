@@ -271,6 +271,7 @@ static void LOGF(const char* f, ...) {
 static void CSV(const char* dir, long seq, float x, float y, float z, float yaw, const char* note) {
     if (!CSVF) return;
     static int rows = 0;
+    if (rows > 40000) return;                       /* about 4 MB per game start: the file used to grow without limit (143 MB on a guest PC) */
     char ts[16]; WallStr(ts, sizeof ts);
     EnterCriticalSection(&L);
     fprintf(CSVF, "%s,%.3f,%s,%ld,%.3f,%.3f,%.3f,%.3f,%s\n", ts, NowMs(), dir, seq, x, y, z, yaw, note ? note : "");
@@ -1927,7 +1928,8 @@ BOOL APIENTRY DllMain(HMODULE m, DWORD r, LPVOID x) {
         char cp[MAX_PATH]; PathIn(cp, sizeof cp, "coop_net.csv");
         long csvsize = 0;
         { FILE* t0 = fopen(cp, "rb"); if (t0) { fseek(t0, 0, SEEK_END); csvsize = ftell(t0); fclose(t0); } }
-        CSVF = fopen(cp, "a");
+        if (csvsize > 4L * 1024 * 1024) csvsize = 0;                  /* an old file above 4 MB is started again */
+        CSVF = fopen(cp, csvsize == 0 ? "w" : "a");
         if (CSVF && csvsize == 0) fprintf(CSVF, "wall,t_ms,dir,seq,x,y,z,yaw,note\n");
         BU = (unsigned char*)malloc(CH);
 
