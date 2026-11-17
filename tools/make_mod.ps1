@@ -1888,6 +1888,8 @@ coop_flag_sync()
         level.coop_flr = [];
     if (!isdefined(level.coop_flbad))
         level.coop_flbad = [];
+    if (!isdefined(level.coop_flwarn))
+        level.coop_flwarn = [];
     pend = [];
     pendt = [];
     for (;;)
@@ -1931,9 +1933,21 @@ coop_flag_sync()
                         coop_flag_applied(pn);
                     }
                 }
+                else
+                    coop_dbg("COOPTRG flag " + pn + " already set here: nothing to do");
             }
             else if (gettime() - pendt[j] < 600000)
+            {
                 keep = 1;
+                // a received flag that this level does not declare (an unknown name, or declared later): say so once, it used to vanish without a line
+                if (gettime() - pendt[j] > 5000 && !isdefined(level.coop_flwarn[pn]))
+                {
+                    level.coop_flwarn[pn] = 1;
+                    coop_dbg("COOPTRG flag " + pn + " unknown here (no such flag in this level yet; kept for 10 minutes)");
+                }
+            }
+            else
+                coop_dbg("COOPTRG flag " + pn + " dropped: this level never declared it in 10 minutes");
             if (keep)
             {
                 np[np.size] = pn;
