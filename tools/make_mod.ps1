@@ -2000,6 +2000,10 @@ coop_trigger_watch()
     level.coop_gate = [];
     level.coop_gate[0] = "TRG_mtrigger_inpipe";
     level.coop_gate[1] = "TRG_mtrigger_trench";
+    // downtown_sniper: these scenes use level.soldier1 / level.volsky / level.soldier4, actors that exist only after the local player has been to their spawners;
+    // fired from the partner's message they ran on undefined actors (52000 script errors on the second PC, the objective loop never ended)
+    level.coop_gate[2] = "TRG_mtrigger_floorclear";
+    level.coop_gate[3] = "TRG_mhelmet_moment";
     // triggers that spawn or steer FRIENDLY actors (friendly chains, waves, floods): mirrored, they spawn the allies of the PARTNER's area in this PC's world,
     // and the engine stops with "Sentient actor_ally_... is following the sentient player ... that is not on a friendly chain" (guest crash in trainyard 22:42:10).
     // Such a trigger (by targetname) is neither sent nor fired.
