@@ -41,6 +41,7 @@
 #define GAME_EXE "CoD2SP_s.exe"
 #define GAME_SHA256 "AB17A89CC3722AE80EDC1F4483CACBCAE08B0373B9128FE4EC053EBC79062281"            /* the Steam build */
 #define GAME_SHA256_RETAIL "64E7ADCA30F5C25A858BB537932C7041D4588A0554BBB917B8E25AC43A0E5A48"     /* the retail v1.3 exe (25980416 bytes): the guest PC runs the co-op on it */
+#define GAME_SHA256_REPORTED "A450569C269A076ACBD3BCBD52C3EE4E84432BB10E31FBD1D3A458D4335B133D"    /* a build a player reported: accepted, not verified by us */
 
 static volatile int g_stop = 0;
 static BOOL WINAPI OnCtrl(DWORD t) { (void)t; g_stop = 1; return TRUE; }
@@ -253,9 +254,9 @@ static int check_exe(const char* game, int verbose) {
     char exe[MAX_PATH], hex[65];
     join(exe, sizeof exe, game, GAME_EXE);
     if (!sha256_file(exe, hex)) { printf("  cannot read %s\n", exe); return 0; }
-    int steam = !_stricmp(hex, GAME_SHA256), retail = !_stricmp(hex, GAME_SHA256_RETAIL);
-    int ok = steam || retail;
-    if (verbose || !ok) printf("  %s sha256 %s %s\n", GAME_EXE, hex, steam ? "(matches the Steam build)" : retail ? "(matches the retail v1.3 build)" : "<- NOT an expected build");
+    int steam = !_stricmp(hex, GAME_SHA256), retail = !_stricmp(hex, GAME_SHA256_RETAIL), reported = !_stricmp(hex, GAME_SHA256_REPORTED);
+    int ok = steam || retail || reported;
+    if (verbose || !ok || reported) printf("  %s sha256 %s %s\n", GAME_EXE, hex, steam ? "(matches the Steam build)" : retail ? "(matches the retail v1.3 build)" : reported ? "(an exe reported by a player: accepted, but not tested by us; if the game does not start or the co-op does not connect, Uninstall and send coop5.log)" : "<- NOT an expected build");
     if (!ok) printf("  expected (Steam)            %s\n  expected (retail v1.3)      %s\n  This tool is made for Call of Duty 2 single player v1.3. Nothing was changed.\n", GAME_SHA256, GAME_SHA256_RETAIL);
     return ok;
 }
