@@ -19,8 +19,8 @@ makes missions load a little faster.
 
 | File | SHA-256 |
 |---|---|
-| `CoD2Coop-0.7.7.zip` | `744c4dc635844efa1c1241d2d63f94f2dbe3ae602b6c6558e0d00415d006cb5c` |
-| `CoD2Coop.exe` | `a15ccb25d29b4a6c3130252be48be43974c5532981fddede09e31ee8e4e5af59` |
+| `CoD2Coop-0.7.7.zip` | `908493b11f12e1cc97710194e52cb0204cd0444e081f50ef08d0628abbd04f68` |
+| `CoD2Coop.exe` | `cb81fda96d8309849f6efaceeb57c2874a7730ed9adc260969739887c897e95d` |
 | `d3d9.dll` (written into the game folder) | `ba6d9d1165bf7fe46d393026ac290b616affbb7546bc789c7819db8e124b3b2a` |
 | `cod2net5.dll` (written into the game folder) | `f604debbc78c265644501a14d1314166c94031c561e4c07620171f53b30479b8` |
 
