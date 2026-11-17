@@ -1890,6 +1890,8 @@ coop_flag_sync()
         level.coop_flbad = [];
     if (!isdefined(level.coop_flwarn))
         level.coop_flwarn = [];
+    if (!isdefined(level.coop_flwait))
+        level.coop_flwait = [];
     pend = [];
     pendt = [];
     for (;;)
@@ -1924,7 +1926,15 @@ coop_flag_sync()
                 {
                     // like the triggers: the world of a player who is far from the partner must not run ahead of him; the flag waits (10 min at most)
                     if (distance(coop_peer_state(), level.player.origin) > 1500 && gettime() - pendt[j] < 600000)
+                    {
                         keep = 1;
+                        // said once per flag: this hold used to be silent (a flag that did not take effect looked lost)
+                        if (!isdefined(level.coop_flwait[pn]))
+                        {
+                            level.coop_flwait[pn] = 1;
+                            coop_dbg("COOPTRG flag " + pn + " waits (this player is far from the partner; it is set when he comes within 1500 units)");
+                        }
+                    }
                     else
                     {
                         level.coop_flr[pn] = 1;
