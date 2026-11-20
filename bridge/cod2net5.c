@@ -646,6 +646,26 @@ static DWORD WINAPI UDP(LPVOID p) {
         int r = recvfrom(s, b, sizeof b - 1, 0, (struct sockaddr*)&from, &fl);
         if (r <= 0) { if (g_quit) break; LOGF("recv err %d", WSAGetLastError()); Sleep(50); continue; }
         b[r] = 0;
+        {   /* WHO may talk to us. Before this check every packet type ("level <map>" included: it changes the mission) was accepted from ANY address that
+               could reach the port. Now: this PC (the test tools), the partner, and nobody else. A pose packet of a new sender is still handed to the
+               existing "reconnect after 5 s of silence" rule below; before a peer is known only "H" (hello) and pose packets pass. */
+            unsigned long fsrc = from.sin_addr.s_addr;
+            int isLoop = (fsrc == inet_addr("127.0.0.1"));
+            int isPose = ((b[0] >= '0' && b[0] <= '9') || b[0] == '-' || b[0] == '.');
+            int isHello = (b[0] == 'H' && b[1] == ' ');
+            int allowed = isLoop;
+            if (!allowed && g_peerKnown && fsrc == g_peerAddr) allowed = 1;
+            if (!allowed && g_peerAuto && (isPose || isHello)) allowed = 1;       /* the host learns / re-learns the guest from these two */
+            if (!allowed) {
+                static DWORD lastBadLog = 0; static unsigned long lastBadSrc = 0; DWORD tnow = GetTickCount();
+                if (fsrc != lastBadSrc || tnow - lastBadLog > 30000) {
+                    lastBadSrc = fsrc; lastBadLog = tnow;
+                    LOGF("ignored a packet from %s: that is not the partner (first byte '%c', %d bytes)", inet_ntoa(from.sin_addr), (b[0] >= 32 && b[0] < 127) ? b[0] : '?', r);
+                }
+                continue;
+            }
+            if ((!strncmp(b, "anim ", 5) || !strncmp(b, "level ", 6)) && !isLoop) { LOGF("ignored a test command from %s (only this PC may send it)", inet_ntoa(from.sin_addr)); continue; }
+        }
         if (!strncmp(b, "anim ", 5)) {   // pose command: "anim N" -> cvar coop_anim, no console needed
             g_anim = atoi(b + 5);
             g_animNew = 1;
