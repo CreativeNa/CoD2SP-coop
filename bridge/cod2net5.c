@@ -1641,7 +1641,7 @@ static void SaveReceive(SOCKET c) {                    /* one incoming checkpoin
     int c2 = CopyFileA(shared, perMap, FALSE) ? 1 : 0;
     strncpy(g_curMap, rmap, sizeof g_curMap - 1); g_curMap[sizeof g_curMap - 1] = 0; g_curN = rn;
     strcpy(g_curLoadName, "coopshared");
-    LOGF("checkpoint received: %s (%ld bytes) -> coopshared.svg %s; last save '%s' %s; save\\%s.svg %s", nm, sz, a ? "ok" : "FAILED",
+    LOGF("checkpoint received: %s (%ld bytes, crc32 %08lX) -> coopshared.svg %s; last save '%s' %s; save\\%s.svg %s", nm, sz, crc, a ? "ok" : "FAILED",
          last[0] ? last : "(unknown)", b2 < 0 ? "left alone" : (b2 ? "replaced" : "NOT replaced"), rmap, c2 ? "replaced" : "NOT replaced");
 }
 
@@ -1717,7 +1717,7 @@ static DWORD WINAPI SAVESYNC(LPVOID p) {
         if (g_curMap[0] && !strcmp(smap, g_curMap) && sn < g_curN) { LOGF("checkpoint %s not sent: older than %s-%d that this PC already has", nm, g_curMap, g_curN); free(buf); continue; }
         int okS = SaveSendBuf(nm, buf, sz);
         free(buf);
-        LOGF("checkpoint sent: %s (%ld bytes) %s", nm, sz, okS ? "ok" : "FAILED (the other PC may be offline or its firewall blocks TCP 27203)");
+        LOGF("checkpoint sent: %s (%ld bytes, crc32 %08lX) %s", nm, sz, crc, okS ? "ok" : "FAILED (the other PC may be offline or its firewall blocks TCP 27203)");
         if (okS && g_mode == 1) { InterlockedExchange(&g_hostFN, 0); InterlockedExchange(&g_replayIdx, -1); }   /* what was sent before is inside this checkpoint now */
         strncpy(g_curMap, smap, sizeof g_curMap - 1); g_curMap[sizeof g_curMap - 1] = 0; g_curN = sn;
         strncpy(g_curLoadName, nm, sizeof g_curLoadName - 1); g_curLoadName[sizeof g_curLoadName - 1] = 0;

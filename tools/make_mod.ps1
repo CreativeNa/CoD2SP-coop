@@ -2576,6 +2576,12 @@ $coop = if ($Probe -eq 'puppet') { $puppetBody }
         else { $probeBody }
 Write-Host "probe variant: $Probe"
 
+# The animation budget: a script may mention at most 28 distinct %animation names (the engine refuses a dynamic animation tree of size greater than 32:
+# the T-pose of 0.7.6 came from 31 names). The check runs on the script that is about to be injected, so a clip added by mistake stops the build.
+$animNames = @([regex]::Matches($coop, '%([A-Za-z][A-Za-z0-9_]*)') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+Write-Host ("animation names mentioned by the co-op script: {0} (limit 28)" -f $animNames.Count)
+if ($animNames.Count -gt 28) { throw ("the co-op script mentions {0} distinct animation names, the limit is 28 (more breaks the animation tree: T-pose): {1}" -f $animNames.Count, ($animNames -join ', ')) }
+
 # Diagnostic lines ("COOPT shot ...", "COOPN ...") reach console.log through iprintln, which also prints them on the
 # player's screen. In the shipped mod they are silent: with the test switch coop_debug 1 coop_dbg writes a "script: ..." line to coop5.log (never to the screen).
 if ($Probe -eq 'net7') {
