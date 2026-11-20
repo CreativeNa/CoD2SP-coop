@@ -15,14 +15,14 @@ It does not touch other programs, the registry (read only) or your saves except 
 (for Windows Defender: Windows Security → Virus & threat protection → Manage settings → Exclusions → Add a folder). The same exclusion also
 makes missions load a little faster.
 
-**Hashes of the files in release 0.7.7** (SHA-256):
+**Hashes of the files in release 0.7.8** (SHA-256):
 
 | File | SHA-256 |
 |---|---|
-| `CoD2Coop-0.7.7.zip` | `e7e8c7791ee1cbd7c5d15a23e2cfdab1b311827ec6ac0a6e4f5c239e09afea71` |
-| `CoD2Coop.exe` | `e8e4b8fc885348429804dee003e7286ef8003c9b5b5258219d5e43267c17170f` |
-| `d3d9.dll` (written into the game folder) | `545d12367ae07ec5831b65090e436c580636c6babd3a1db52109ec5680fcc0e9` |
-| `cod2net5.dll` (written into the game folder) | `f68df7e7ff66c40389099e2a686558fe992878df241a2a6c84fdd202b89d5175` |
+| `CoD2Coop-0.7.8.zip` | `6b24da8e1a2b6106a201cbf8373ecc3bbde4efe4f3f726defc3e65c7ef27ec24` |
+| `CoD2Coop.exe` | `27417411790861d2c3b1074903cdd1d7e4db085475812618516391db15a111cb` |
+| `d3d9.dll` (written into the game folder) | `bacd52f369261440d612e0eef8d3f1b6bdad6b2889efff94f9d7f81ad23456fb` |
+| `cod2net5.dll` (written into the game folder) | `4d15d93c7ab29beb8ea1bc14030c025e57ca1fc94402430d296e1abc91084937` |
 
 Check: `Get-FileHash <file> -Algorithm SHA256` in PowerShell. To remove everything: `CoD2Coop.exe` → **Uninstall**.
 
@@ -41,5 +41,5 @@ Check: `Get-FileHash <file> -Algorithm SHA256` in PowerShell. To remove everythi
 (Windows Defender: Безопасность Windows → Защита от вирусов и угроз → Управление настройками → Исключения → Добавить папку). Это же исключение
 немного ускоряет загрузку миссий.
 
-**Хеши файлов релиза 0.7.7** (SHA-256) — в таблице выше. Проверка: `Get-FileHash <файл> -Algorithm SHA256` в PowerShell.
+**Хеши файлов релиза 0.7.8** (SHA-256) — в таблице выше. Проверка: `Get-FileHash <файл> -Algorithm SHA256` в PowerShell.
 Чтобы убрать всё: `CoD2Coop.exe` → **Uninstall**.

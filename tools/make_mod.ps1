@@ -15,12 +15,14 @@ param(
     [ValidateSet('probe', 'puppet', 'follow', 'char', 'net', 'net2', 'net3', 'net4', 'net5', 'net6', 'net7')]
     [string]$Probe = 'puppet',
     [string]$Suffix = '',
+    [switch]$NoBank2,         # dev: build WITHOUT the second body (maps/coop_anims2.gsc + animtrees/coop_puppet2.atr: the pistol poses on a second animation tree, see docs/BUGS.md)
     [switch]$Install,         # installer mode (a player's PC): no python, no dev leftovers; the archive is built into <TestDir>\main from the PLAYER'S OWN game files
     [switch]$MainMenuOnly,    # hide the CO-OP button in the pause menu (patch_menu.py --mainonly); by default it is shown there too
     [string[]]$Levels = @()   # extra levels to override with the same mod (all use the net7/net5 body); 'all' = every playable SP level
 )
 
 $ErrorActionPreference = 'Stop'
+$Bank2 = -not $NoBank2          # the second body is part of the mod
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 Add-Type -AssemblyName System.IO.Compression
 
@@ -818,7 +820,7 @@ coop_tank_main()
     if (!isdefined(pa))
         return;
     // the level's own set-up threads (playerturretsetup, apply_player_rumble: "wait 1", then they read level.playervehicle) must run first:
-    // a swap before that leaves them with no player vehicle (thousands of script runtime errors on a slow PC)
+    // a swap before that leaves them with no player vehicle (thousands of script runtime errors on the guest PC, 0.9.25-0.9.27)
     wait 1.8;
     guest = (coop_is_guest() == 1 || getcvar("coop_tank_guest") == "1");
     mine = pa;
@@ -915,6 +917,11 @@ coop_tank_follow(ghost)
     ghost hide();
     lastfire = coop_tank_fire();
     shown = 0;
+    spd = 0;
+    lp = undefined;
+    lt = 0;
+    snd = 0;
+    nextdust = 0;
     // Movement of the partner's tank copy. The vehicle is simulated by the engine, so the copy is driven by
     // moveTo() and NOT by writing .origin (that made the engine fight it: the constant shaking) and not by
     // rotateTo() while moving (that fought the steering: the copy jumped around). moveTo with a 0.2 s
@@ -926,7 +933,15 @@ coop_tank_follow(ghost)
     {
         wait 0.05;
         if (coop_tank_age() > 3000)
+        {
+            // the partner's tank is gone (or no packets): its engine falls silent
+            if (snd != 0)
+            {
+                ghost stoploopsound();
+                snd = 0;
+            }
             continue;
+        }
         p = coop_tank_pos();
         if (coop_peer_solo())
         {
@@ -939,6 +954,49 @@ coop_tank_follow(ghost)
             ghost.origin = p;
             ghost rotateTo(coop_tank_ang(), 0.1);
             ghost show();
+        }
+
+        // speed of the partner's tank from the packets (units a second, smoothed): the engine sound (idle / moving) and the dust of the tracks follow it
+        now = gettime();
+        if (!isdefined(lp))
+        {
+            lp = p;
+            lt = now;
+        }
+        else if (now - lt >= 100)
+        {
+            sp = distance((p[0], p[1], 0), (lp[0], lp[1], 0)) / ((now - lt) / 1000);
+            spd = spd * 0.6 + sp * 0.4;
+            lp = p;
+            lt = now;
+        }
+        want = snd;
+        if (spd > 35 || (snd == 2 && spd > 20))
+            want = 2;
+        else
+            want = 1;
+        if (want != snd)
+        {
+            snd = want;
+            ghost stoploopsound();
+            if (isdefined(level.coop_tank_snd))
+            {
+                if (snd == 2)
+                    ghost playloopsound(level.coop_tank_snd[1]);
+                else
+                    ghost playloopsound(level.coop_tank_snd[0]);
+            }
+        }
+        if (snd == 2 && isdefined(level.coop_fx_tread) && now >= nextdust)
+        {
+            nextdust = now + 120;
+            gy = anglestoforward((0, ghost.angles[1], 0));
+            gr = anglestoright((0, ghost.angles[1], 0));
+            for (sd = -1; sd <= 1; sd += 2)
+            {
+                dp = ghost.origin + (gr[0] * 62 * sd - gy[0] * 75, gr[1] * 62 * sd - gy[1] * 75, 6);
+                playfx(level.coop_fx_tread, dp, (0, 0, 1));
+            }
         }
 
         cur = ghost.origin;
@@ -956,15 +1014,49 @@ coop_tank_follow(ghost)
         // speed with the engine's own acceleration and braking (the old 0.06 s window made it dart to every
         // packet - that was the ice). The hull angle is still ours: moveTo steers the vehicle along the path but
         // does not turn the body, and leaving the rotation out made the copy drive sideways.
-        ghost moveTo(p, 0.2);
-        ghost rotateTo(coop_tank_ang(), 0.2);
+        // the recoil of the partner's shot (coop_tank_kick): the hull rocks back and settles, pushed a little the other way
+        hl = coop_tank_ang();
+        kk = coop_tank_kick(ghost, hl[1]);
+        ghost moveTo((p[0] + kk[2], p[1] + kk[3], p[2]), kk[4]);
+        ghost rotateTo((hl[0] + kk[0], hl[1], hl[2] + kk[1]), kk[4]);
         f = coop_tank_fire();
         if (f != lastfire)
         {
             lastfire = f;
+            ghost.coop_kick = gettime();
             thread coop_tank_shot(ghost, p, coop_tank_turret());
         }
     }
+}
+
+// the rocking of the copy of the partner's tank after his shot: [0] extra pitch, [1] extra roll, [2] [3] shift of the hull (x y), [4] the time the engine
+// takes to get there. The kick acts along the direction the cannon points relative to the hull: a shot ahead rocks the nose, a shot to the side the roll.
+// It fades out within one second.
+coop_tank_kick(ghost, hullyaw)
+{
+    r = [];
+    r[0] = 0;
+    r[1] = 0;
+    r[2] = 0;
+    r[3] = 0;
+    r[4] = 0.2;
+    if (!isdefined(ghost.coop_kick))
+        return r;
+    dt = (gettime() - ghost.coop_kick) / 1000;
+    if (dt >= 1.0)
+        return r;
+    fade = 1 - dt;
+    osc = sin(dt * 576) * fade;
+    ta = coop_tank_turret();
+    rel = ta[1] - hullyaw;
+    r[0] = 0 - 2.5 * cos(rel) * osc;
+    r[1] = 2.5 * sin(rel) * osc;
+    tf = anglestoforward((0, ta[1], 0));
+    sh = 0 - 10 * fade * fade;
+    r[2] = tf[0] * sh;
+    r[3] = tf[1] * sh;
+    r[4] = 0.1;
+    return r;
 }
 
 // a shot of the partner's tank: muzzle fire and an explosion where the shell hits; damages enemies only
@@ -1128,6 +1220,7 @@ coop_chan_publish()
     level.coop_evt = 0;
     r = coop_ping(7777);
     thread coop_enemy_watch();
+    thread coop_vehicle_watch();
     thread coop_kill_recv();
     thread coop_level_watch();
     thread coop_health_hud();
@@ -1146,12 +1239,20 @@ coop_chan_publish()
     autorl = 0;
     maxclip = 0;
     lastbp = 0;
+    mgt = 0;
     lastrl = 0;
     level.coop_fc = 0;
     for (;;)
     {
         wn = level.player getcurrentweapon();
         wi = coop_weapon_id(tolower(wn));
+        // on a placed machine gun: the partner sees the gunner pose (ids 28 stand / 29 prone: the mg42_bipod_* entries of the table)
+        if (coop_mounted_mg())
+        {
+            wi = 28;
+            if (level.player getstance() == "prone")
+                wi = 29;
+        }
         if (wi != lastwi)
         {
             lastwi = wi;
@@ -1190,9 +1291,26 @@ coop_chan_publish()
             shot = lastammo - ammo;
         if (wi >= 28)
         {
+            // a placed MG fires about 20 rounds a second: the rounds are counted by TIME while the button is held (one per pass of this loop lost shots whenever a pass took longer than 50 ms)
             shot = 0;
             if (level.player attackbuttonpressed())
-                shot = 1;
+            {
+                mgnow = gettime();
+                if (mgt == 0 || mgnow - mgt > 200)
+                {
+                    shot = 1;
+                    mgt = mgnow;
+                }
+                else
+                {
+                    shot = int((mgnow - mgt) / 50);
+                    if (shot > 6)
+                        shot = 6;
+                    mgt = mgt + shot * 50;
+                }
+            }
+            else
+                mgt = 0;
         }   // several rounds can fall between two samples of a fast weapon: the counter below carries all of them
         clip = -1;
         if (level.player getweaponslotweapon("primary") == wn)
@@ -1259,6 +1377,9 @@ coop_chan_publish()
             st = 2;
         if (!level.player isonground() && st == 0)
             st = 3;
+        // on a placed machine gun the player is not "on the ground" for the engine: that must not read as a jump
+        if (st == 3 && isdefined(level.coop_mgon) && level.coop_mgon)
+            st = 0;
         if (coop_player_link() > 0)
             st = 4;
         // F8 (the bridge): go to the partner, 60 units beside him; alive and on foot only
@@ -1278,6 +1399,20 @@ coop_chan_publish()
             hp = 0;
         if (hp > 100)
             hp = 100;
+        // a failed mission (coop_mission_failed in _utility sets the request): the death event takes priority over the shot/melee events that this loop
+        // writes (the mission failed while the player was firing at an ally: the plain write was overwritten in the same pass) and stays for 8 packets
+        if (isdefined(level.coop_failreq))
+        {
+            level.coop_failreq = undefined;
+            level.coop_evc = level.coop_evc + 1;
+            level.coop_failevt = level.coop_evc * 8 + 5;
+            level.coop_failhold = 8;
+        }
+        if (isdefined(level.coop_failhold) && level.coop_failhold > 0)
+        {
+            level.coop_evt = level.coop_failevt;
+            level.coop_failhold = level.coop_failhold - 1;
+        }
         coop_publish_state(po, an[1], st, level.coop_evt, wi, coop_player_parent(), hp);
         wait 0.05;
     }
@@ -1298,6 +1433,304 @@ $net7Body = $net7Body -replace 'setcvar\("logfile", "2"\);', ''
 # animation by speed: the puppet runs (the stock drone run loop) while it moves faster than ~50 units/s, else the calm idle pose; the speed is the
 # puppet's own displacement, so nothing extra goes over the network
 $net7Body = $net7Body -replace 'puppet thread coop_pose\(\);', 'puppet thread coop_pose_move();'
+# TEST of a second animation "bank": the engine refuses a dynamic animation tree of more than 32 nodes, counted per script that uses the tree.
+# A second script file (maps/coop_anims2.gsc) with its own #using_animtree("coop_puppet") may have its own budget. Switch: coop_bank2_test "on".
+if (-not $Bank2) {
+$net7Body = $net7Body + @'
+
+coop_p2_ready()
+{
+    return false;
+}
+
+coop_p2_len(id)
+{
+    return 1000;
+}
+
+coop_p2_set(id)
+{
+}
+
+coop_p2_shot(stance)
+{
+    return false;
+}
+
+coop_p2_back(id, ms)
+{
+}
+
+coop_fxbody()
+{
+    return self;
+}
+'@
+}
+if ($Bank2) {
+# the second body: its own animation tree (coop_puppet2), shown instead of the main puppet for the pistol poses that do not fit the 32-node limit of the first tree
+$net7Body = $net7Body -replace 'puppet thread coop_pose_move\(\);', ('puppet thread coop_pose_move();' + [Environment]::NewLine + '    puppet thread coop_p2_init();')
+$net7Body = $net7Body + @'
+
+coop_mg_release(t)
+{
+    // the map gun comes back to its place, our copy of it goes
+    if (isdefined(t) && isdefined(t.coop_org))
+    {
+        t.origin = t.coop_org;
+        t.coop_org = undefined;
+    }
+    if (isdefined(self.coop_mgg))
+    {
+        self.coop_mgg delete();
+        self.coop_mgg = undefined;
+    }
+}
+
+coop_mg_aim()
+{
+    // The engine does not let a script aim a placed machine gun nobody holds (a target entity is never taken: logged "target set 0"), and a gun in the
+    // hands of the body came out turned the wrong way. So while the partner operates a placed machine gun on this PC the map gun is moved out of sight (the
+    // game's own scripts do the same, maps/beltot.gsc) and a copy of it (a script_model, the same model) stands in its place and is turned to where the
+    // partner aims: yaw from his view, pitch from his last shot
+    t = undefined;
+    srch = 0;
+    for (;;)
+    {
+        wait 0.05;
+        if (!isdefined(self))
+            return;
+        wid = coop_peer_weapon();
+        if (wid < 28 || wid > 32)
+        {
+            if (isdefined(t))
+            {
+                self coop_mg_release(t);
+                t = undefined;
+                self.coop_mgpitch = 0;
+            }
+            continue;
+        }
+        if (isdefined(t))
+        {
+            if (isdefined(self.coop_mgg))
+            {
+                pit = 0;
+                if (isdefined(self.coop_mgpitch))
+                    pit = self.coop_mgpitch;
+                if (pit > 35)
+                    pit = 35;
+                if (pit < -35)
+                    pit = -35;
+                self.coop_mgg.angles = (pit, coop_peer_yaw(), 0);
+            }
+            continue;
+        }
+        if (gettime() < srch)
+            continue;
+        srch = gettime() + 500;
+        best = 140;
+        a = getentarray("misc_mg42", "classname");
+        b = getentarray("misc_turret", "classname");
+        for (i = 0; i < b.size; i++)
+            a[a.size] = b[i];
+        for (i = 0; i < a.size; i++)
+        {
+            if (!isdefined(a[i]))
+                continue;
+            if (isdefined(a[i] getturretowner()))
+                continue;
+            d = distance(a[i].origin, self.origin);
+            if (d < best)
+            {
+                best = d;
+                t = a[i];
+            }
+        }
+        if (!isdefined(t))
+            continue;
+        t.coop_org = t.origin;
+        g = spawn("script_model", t.origin);
+        g setmodel("xmodel/weapon_mg42");
+        g.angles = (0, coop_peer_yaw(), 0);
+        self.coop_mgg = g;
+        self.coop_mgpitch = 0;
+        t.origin = t.origin + (0, 0, -1000);
+        coop_log("COOPMG the placed machine gun at " + int(best) + " units from the partner is replaced by a copy that follows his aim");
+    }
+}
+
+coop_p2_mgweapon(b, want)
+{
+    // the machine gun in the hands of the second body (ids 9-12), taken off again for every other pose
+    if (want && !isdefined(self.coop_mgm))
+    {
+        // the world model of the placed gun (the weapon item itself is not precached by this mod, getweaponmodel would give nothing): precached in coop_precache_weapons
+        mdl = "xmodel/weapon_mg42";
+        b attach(mdl, "tag_weapon_right");
+        self.coop_mgm = mdl;
+        coop_log("COOPMG machine gun model attached to the gunner body");
+    }
+    else if (!want && isdefined(self.coop_mgm))
+    {
+        b detach(self.coop_mgm, "tag_weapon_right");
+        self.coop_mgm = undefined;
+    }
+}
+
+coop_p2_init()
+{
+    self.coop_p2 = 0;
+    self thread coop_mg_aim();
+    wait 1;
+    b = spawn("script_model", self.origin);
+    if (!isdefined(b))
+        return;
+    b setmodel(self.model);
+    b makeFakeAI();
+    b setcontents(0);
+    maps\coop_anims2::setup(b);
+    b hide();
+    self.coop_b = b;
+    thread coop_p2_follow(self, b);
+    coop_log("COOPANIM second body ready");
+}
+
+coop_p2_ready()
+{
+    return isdefined(self.coop_b);
+}
+
+coop_p2_len(id)
+{
+    return maps\coop_anims2::length(id);
+}
+
+coop_p2_follow(a, b)
+{
+    for (;;)
+    {
+        wait 0.05;
+        if (!isdefined(a))
+        {
+            if (isdefined(b))
+                b delete();
+            return;
+        }
+        if (!isdefined(b))
+            return;
+        if (a.coop_p2 != 0)
+        {
+            b.origin = a.origin;
+            b.angles = a.angles;
+        }
+    }
+}
+
+coop_fxbody()
+{
+    // the body that is on screen now: effects (muzzle flash) must come from ITS weapon
+    if (isdefined(self.coop_b) && isdefined(self.coop_p2) && self.coop_p2 != 0)
+        return self.coop_b;
+    return self;
+}
+
+coop_p2_shot(stance)
+{
+    // a shot with a pistol while the second body is shown: its own shooting clip, then back to its idle
+    if (!isdefined(self.coop_b) || !isdefined(self.coop_p2) || self.coop_p2 == 0)
+        return false;
+    c = 0;
+    if (stance == 1 && (self.coop_p2 == 1 || self.coop_p2 == 6))
+        c = 7;
+    else if (stance == 0 && self.coop_p2 == 4)
+        c = 8;
+    else if (self.coop_p2 == 9)
+        c = 10;
+    else if (self.coop_p2 == 11)
+        c = 12;
+    if (c == 0)
+        return false;
+    // fast fire (a placed MG: 20 shots a second): the firing clip is restarted at most every 120 ms so that it can play, and ONE thread (not one per shot,
+    // each of which restarted the idle clip over the firing one) brings the body back to its idle 250 ms after the LAST shot
+    now = gettime();
+    if (!isdefined(self.coop_p2_ls) || now - self.coop_p2_ls >= 120)
+    {
+        self.coop_p2_ls = now;
+        maps\coop_anims2::play(self.coop_b, c);
+    }
+    self.coop_p2_until = now + 250;
+    if (!isdefined(self.coop_p2_bk))
+    {
+        self.coop_p2_bk = 1;
+        self thread coop_p2_shotback(self.coop_p2);
+    }
+    return true;
+}
+
+coop_p2_shotback(id)
+{
+    for (;;)
+    {
+        wait 0.05;
+        if (!isdefined(self))
+            return;
+        if (gettime() >= self.coop_p2_until)
+            break;
+    }
+    self.coop_p2_bk = undefined;
+    self.coop_p2_ls = undefined;
+    if (isdefined(self.coop_b) && isdefined(self.coop_p2) && self.coop_p2 == id)
+        maps\coop_anims2::play(self.coop_b, id);
+}
+
+coop_p2_back(id, ms)
+{
+    // after ms milliseconds the second body returns to the idle (or the run) it was in, unless the state changed meanwhile
+    cur = self.coop_p2;
+    wait (ms / 1000);
+    if (isdefined(self.coop_b) && isdefined(self.coop_p2) && (self.coop_p2 == cur || self.coop_p2 == 3 || self.coop_p2 == 5))
+    {
+        self.coop_p2 = id;
+        maps\coop_anims2::play(self.coop_b, id);
+    }
+}
+
+coop_p2_set(id)
+{
+    if (!isdefined(self.coop_b) || id == self.coop_p2)
+        return;
+    b = self.coop_b;
+    if (id == 0)
+    {
+        self coop_p2_mgweapon(b, false);
+        b hide();
+        self show();
+        self.coop_p2 = 0;
+        return;
+    }
+    if (self.coop_p2 == 0)
+    {
+        // body, head and weapon of the main puppet as they are now
+        b detachAll();
+        b setmodel(self.model);
+        self.coop_mgm = undefined;
+        n = self getattachsize();
+        for (i = 0; i < n; i++)
+            b attach(self getattachmodelname(i), self getattachtagname(i));
+        b.origin = self.origin;
+        b.angles = self.angles;
+        maps\coop_anims2::play(b, id);
+        self hide();
+        b show();
+    }
+    else
+        maps\coop_anims2::play(b, id);
+    self coop_p2_mgweapon(b, false);
+    self.coop_p2 = id;
+}
+'@
+}
 $net7Body += @"
 
 coop_pose_pitch()
@@ -1320,6 +1753,7 @@ coop_pose_move()
     lastw = -1;
     lastpz = 0;
     lastun = 0;
+    lastmg = 0;
     jdown = 0;
     zero = 0;
     vhid = 0;
@@ -1403,6 +1837,7 @@ coop_pose_move()
             {
                 spitch = (int((ev - 3) / 8) % 256) - 90;
                 swid = coop_peer_weapon();
+                nofire = 0;
                 seye = self.origin + (0, 0, 60);
                 sfw = (1, 0, 0);
                 sfc = int(int((ev - 3) / 8) / 256);
@@ -1410,8 +1845,10 @@ coop_pose_move()
                     self.coop_fc = sfc - 1;
                 nsh = (sfc - self.coop_fc + 999) % 999;
                 self.coop_fc = sfc;
-                if (nsh < 1 || nsh > 8)
+                if (nsh < 1 || nsh > 60)
                     nsh = 1;
+                if (swid > 27)
+                    self.coop_mgpitch = spitch;
                 if (swid > 0)
                 {
                     syaw = self.angles[1];
@@ -1437,7 +1874,12 @@ coop_pose_move()
                     if (ptt > -60 && ptt < 3100)
                     {
                         pcl = (sst[0] + sfw[0] * ptt, sst[1] + sfw[1] * ptt, sst[2] + sfw[2] * ptt);
-                        if (distance(pcl, pcn) < 130)
+                        // 130 units for a rifle; a gun on the MG stand fires a fixed line, so 60 (the body of the local player) is enough: with 130 the bullets
+                        // were switched off whenever the two players stood close together and the fire came in parts
+                        nfr = 130;
+                        if (swid > 27)
+                            nfr = 60;
+                        if (distance(pcl, pcn) < nfr)
                             nofire = 1;
                     }
                     if (isdefined(shtr["entity"]) && shtr["entity"] == level.player)
@@ -1451,14 +1893,33 @@ coop_pose_move()
                     swpn = level.coop_weps[swid - 1];
                     if (swid > 27)
                         swpn = "bren";
-                    for (k = 0; k < nsh && !nofire; k++)
+                    for (k = 0; k < nsh && k < 6 && !nofire; k++)
                     {
                         magicbullet(swpn, sst, sen);
-                        if (k + 1 < nsh)
+                        // a burst of many rounds is fired at once: waiting between them made the loop fall behind and the surplus was dropped
+                        if (k + 1 < nsh && nsh <= 3)
                             wait 0.03;
                     }
                 }
-                if (coop_peer_stance() == 2)
+                // the gunner pose must be there with the FIRST shot: while the shots keep the loop busy the pose code below never runs
+                if (swid >= 28 && swid <= 32 && coop_p2_ready() && coop_peer_stance() != 4)
+                {
+                    if (swid == 29 || swid == 31 || coop_peer_stance() == 2)
+                        self coop_p2_set(11);
+                    else
+                        self coop_p2_set(9);
+                }
+                if (!isdefined(self.coop_shn))
+                    self.coop_shn = 0;
+                self.coop_shn = self.coop_shn + 1;
+                bd = 0;
+                if (isdefined(self.coop_p2))
+                    bd = self.coop_p2;
+                if (self.coop_shn % 40 == 1)
+                    coop_log("COOPSHOT event " + self.coop_shn + " rounds " + nsh + " suppressed " + nofire + " weapon " + swid + " body " + bd);
+                if (self coop_p2_shot(coop_peer_stance()))
+                    wait 0.0;
+                else if (coop_peer_stance() == 2)
                     self setflaggedanimknobrestart("coop_pose", %prone_shoot_straight, 1, 0.05, 1);
                 else if (coop_peer_stance() == 1)
                     self setflaggedanimknobrestart("coop_pose", %crouch_shoot_straight, 1, 0.05, 1);
@@ -1469,7 +1930,17 @@ coop_pose_move()
                 {
                     swn = level.coop_weps[swid - 1];
                     sfx = level.coop_fx_rifle;
-                    playfxontag(sfx, self, "tag_flash");
+                    // the gunner body (second body ids 9 / 11): neither its model nor the attached gun has a tag_flash (a missing tag is a script error), so the flash
+                    // is placed in the air in front of the gun, along the line of fire
+                    if (isdefined(self.coop_p2) && (self.coop_p2 == 9 || self.coop_p2 == 11))
+                        {
+                        fo = self.origin + (0, 0, 40);
+                        if (isdefined(self.coop_mgg))
+                            fo = self.coop_mgg.origin + (0, 0, 8);
+                        playfx(sfx, (fo[0] + sfw[0] * 45, fo[1] + sfw[1] * 45, fo[2] + sfw[2] * 45), sfw);
+                    }
+                    else
+                        playfxontag(sfx, self coop_fxbody(), "tag_flash");
                     if (swn == "mosin_nagant" || swn == "mosin_nagant_sniper" || swn == "kar98k" || swn == "kar98k_sniper" || swn == "enfield" || swn == "enfield_scope" || swn == "springfield")
                     {
                         // bolt action: the reload clip sped up stands in for working the bolt (placeholder until a real rechamber animation is found)
@@ -1511,10 +1982,22 @@ coop_pose_move()
                     continue;
                 }
                 // prone: no reload clip (the standing one would make the puppet get up); it stays in its prone pose
-                if (coop_peer_stance() == 1)
+                if (coop_peer_stance() == 1 && ps && coop_p2_ready())
+                {
+                    self coop_p2_set(3);
+                    t = coop_p2_len(3);
+                    self thread coop_p2_back(1, t);
+                }
+                else if (coop_peer_stance() == 1)
                 {
                     self setflaggedanimknobrestart("coop_pose", %reload_crouch_rifle, 1, 0.1, 1);
                     t = int(getanimlength(%reload_crouch_rifle) * 1000);
+                }
+                else if (coop_peer_stance() != 2 && ps && coop_p2_ready())
+                {
+                    self coop_p2_set(5);
+                    t = coop_p2_len(5);
+                    self thread coop_p2_back(4, t);
                 }
                 else if (coop_peer_stance() != 2)
                 {
@@ -1533,7 +2016,7 @@ coop_pose_move()
         }
         if (gettime() < busyuntil)
         {
-            wait 0.1;
+            wait 0.05;
             continue;
         }
         o = self.origin;
@@ -1561,6 +2044,10 @@ coop_pose_move()
             if (pw == "tt30" || pw == "luger" || pw == "colt" || pw == "webley")
                 ps = 1;
         }
+        // a mounted machine gun (weapon ids 28-32): the gunner pose, prone for the prone gun, standing for the others
+        mgm = 0;
+        if (lastw >= 28 && lastw <= 32 && coop_p2_ready() && st != 4)
+            mgm = 1;
         now = gettime();
         pvj = coop_peer_state();
         dz = pvj[2] - lastpz;
@@ -1571,11 +2058,20 @@ coop_pose_move()
             jdown = 1;
         }
         lastpz = pvj[2];
-        if (key != cur || now >= nextrestart || un != lastun)
+        if (key != cur || now >= nextrestart || un != lastun || mgm != lastmg)
         {
             lastun = un;
+            lastmg = mgm;
             t = 600000;
-            if (st == 3)
+            p2w = 0;
+            if (mgm)
+            {
+                if (st == 2 || lastw == 29 || lastw == 31)
+                    p2w = 11;
+                else
+                    p2w = 9;
+            }
+            else if (st == 3)
             {
                 // airborne: a rising partner gets the leap clip (sped up), one that is already falling gets the jump-down clip
                 jdown = 0;
@@ -1605,6 +2101,13 @@ coop_pose_move()
                 }
                 else if (un)
                     self setflaggedanimknobrestart("coop_pose", %unarmed_crouch_idle1, 1, 0.2, 1);
+                else if (ps && coop_p2_ready() && mv)
+                {
+                    p2w = 6;
+                    t = coop_p2_len(6);
+                }
+                else if (ps && coop_p2_ready())
+                    p2w = 1;
                 else
                     self setflaggedanimknobrestart("coop_pose", %crouch_shoot_straight, 1, 0.2, 1);
             }
@@ -1630,10 +2133,13 @@ coop_pose_move()
             }
             else if (un)
                 self setflaggedanimknobrestart("coop_pose", %standunarmed_idle_loop, 1, 0.2, 1);
+            else if (ps && coop_p2_ready())
+                p2w = 4;
             else if (ps)
                 self setflaggedanimknobrestart("coop_pose", %pt_stand_alert_pistol, 1, 0.2, 1);
             else
                 self setflaggedanimknobrestart("coop_pose", %stand_alert_2, 1, 0.2, 1);
+            self coop_p2_set(p2w);
             cur = key;
             nextrestart = now + t;
         }
@@ -1825,6 +2331,14 @@ coop_precache_weapons()
         level.coop_fx_tankflash = loadfx("fx/muzzleflashes/cruisader_flash");
         level.coop_fx_tankdust = loadfx("fx/dust/tank_dust_blowback_libya");
         level.coop_fx_tankdist = loadfx("fx/distortion/distortion_tank_muzzleflash");
+        // the engine of the partner's tank (the game's own crusader aliases, looping: idle / moving) and the dust of its tracks
+        level.coop_tank_snd = [];
+        level.coop_tank_snd[0] = "crusader_idle_high";
+        level.coop_tank_snd[1] = "crusader_engine_high";
+        if (getcvar("mapname") == "libya" || getcvar("mapname") == "88ridge" || getcvar("mapname") == "ridge88")
+            level.coop_fx_tread = loadfx("fx/dust/tread_dust_libya");
+        else
+            level.coop_fx_tread = loadfx("fx/dust/tread_dust_brown");
         if (getcvar("mapname") == "libya" || getcvar("mapname") == "88ridge" || getcvar("mapname") == "ridge88")
             level.coop_fx_tankhit = loadfx("fx/explosions/tank_impact_libya");
         else if (getcvar("mapname") == "decoytown" || getcvar("mapname") == "decoytrenches")
@@ -1891,6 +2405,7 @@ coop_precache_weapons()
     level.coop_weps[31] = "30cal_prone";
     for (i = 0; i < 27; i++)
         precacheItem(level.coop_weps[i]);
+    precacheModel("xmodel/weapon_mg42");
 }
 
 coop_weapon_id(name)
@@ -1901,6 +2416,40 @@ coop_weapon_id(name)
             return i + 1;
     }
     return 0;
+}
+
+coop_mounted_mg()
+{
+    // 1 while the local player operates a placed machine gun: getcurrentweapon() keeps returning the weapon he carried, so the turret entities are asked
+    // (misc_mg42 / misc_turret, getturretowner()); checked five times a second, the turret list is refreshed every 4 seconds
+    if (isdefined(level.coop_mgnext) && gettime() < level.coop_mgnext)
+        return level.coop_mgon;
+    level.coop_mgnext = gettime() + 200;
+    if (!isdefined(level.coop_mgref) || gettime() >= level.coop_mgref)
+    {
+        level.coop_mgref = gettime() + 4000;
+        level.coop_mglist = [];
+        a = getentarray("misc_mg42", "classname");
+        for (i = 0; i < a.size; i++)
+            level.coop_mglist[level.coop_mglist.size] = a[i];
+        a = getentarray("misc_turret", "classname");
+        for (i = 0; i < a.size; i++)
+            level.coop_mglist[level.coop_mglist.size] = a[i];
+    }
+    level.coop_mgon = 0;
+    for (i = 0; i < level.coop_mglist.size; i++)
+    {
+        t = level.coop_mglist[i];
+        if (!isdefined(t))
+            continue;
+        o = t getturretowner();
+        if (isdefined(o) && o == level.player)
+        {
+            level.coop_mgon = 1;
+            break;
+        }
+    }
+    return level.coop_mgon;
 }
 "@
 # the puppet shows the weapon the peer really holds (table above; precached at level start)
@@ -1931,7 +2480,12 @@ coop_flag_sync()
         n = coop_pop_flag();
         while (n != "")
         {
-            if (n == "entered trench" || n == "started charge")
+            if (n == "coop_missionfailed")
+            {
+                // the partner failed the mission (not died): the death event that comes with it shows the fail screen here instead of killing this player
+                level.coop_remote_fail = gettime();
+            }
+            else if (n == "entered trench" || n == "started charge")
             {
                 // the trench sequence spawns the allies of the partner's area: a world that plays it while its own player is elsewhere crashes
                 // ("not on a friendly chain"): these flags are set only by this player's own entry
@@ -2109,6 +2663,19 @@ coop_trigger_watch()
         }
     }
     coop_dbg("COOPTRG watching " + n + " triggers, mirror " + mir);
+    thread coop_enemy_count();
+}
+
+coop_enemy_count()
+{
+    // the number of living actors of each side every 10 s (coop_debug 1): the two PCs' logs show how far their worlds differ
+    for (;;)
+    {
+        wait 10;
+        ax = getaiarray("axis");
+        al = getaiarray("allies");
+        coop_dbg("COOPEN axis " + ax.size + " allies " + al.size);
+    }
 }
 
 coop_trig_num(v)
@@ -2200,6 +2767,64 @@ coop_trigger_refire(trig, key)
     }
 }
 
+coop_enemysync_trigger(trig, key)
+{
+    // coop_enemysync (default on, "off" in the profile switches it off): a trigger that spawns ENEMIES only (every spawner it reaches is axis, none is allied) is
+    // fired at once from the partner's message, also when this PC's player is far from the partner: the enemies of the partner's area then exist on this PC
+    // too (their deaths are mirrored by the kill events). Triggers that spawn allies keep the distance rule (friendly chains: see coop_deny).
+    // The spawners are found by the CLASS of the entities the trigger targets (actor_axis_* / actor_ally_*; getspawnerarray().team was not set on them),
+    // following a chain of triggers two steps deep.
+    if (getcvar("coop_enemysync") == "off")
+        return 0;
+    if (!isdefined(trig))
+        return 0;
+    if (!isdefined(trig.target))
+    {
+        coop_dbg("COOPTRG " + key + " not enemy-only: the trigger has no target (it only starts a script or sets a flag)");
+        return 0;
+    }
+    r = coop_enemy_targets(trig.target, 0);
+    if (r[0] > 0 && r[1] == 0)
+    {
+        coop_dbg("COOPTRG " + key + " spawns " + r[0] + " enemy spawners only: fired at once (coop_enemysync)");
+        return 1;
+    }
+    coop_dbg("COOPTRG " + key + " not enemy-only: target " + trig.target + ", axis spawners " + r[0] + " allied " + r[1] + ", entities " + r[2] + ", first class " + r[3]);
+    return 0;
+}
+
+coop_enemy_targets(name, depth)
+{
+    // [0] axis spawners, [1] allied spawners, [2] entities found, [3] the class of the first one
+    r = [];
+    r[0] = 0;
+    r[1] = 0;
+    r[2] = 0;
+    r[3] = "-";
+    e = getentarray(name, "targetname");
+    r[2] = e.size;
+    for (k = 0; k < e.size; k++)
+    {
+        if (!isdefined(e[k]) || !isdefined(e[k].classname))
+            continue;
+        cn = e[k].classname;
+        if (k == 0)
+            r[3] = cn;
+        if (issubstr(cn, "actor_axis"))
+            r[0] = r[0] + 1;
+        else if (issubstr(cn, "actor_ally"))
+            r[1] = r[1] + 1;
+        else if (depth < 2 && isdefined(e[k].target) && issubstr(cn, "trigger"))
+        {
+            q = coop_enemy_targets(e[k].target, depth + 1);
+            r[0] = r[0] + q[0];
+            r[1] = r[1] + q[1];
+            r[2] = r[2] + q[2];
+        }
+    }
+    return r;
+}
+
 coop_trigger_fire(key)
 {
     if (!isdefined(level.coop_trigk))
@@ -2227,7 +2852,7 @@ coop_trigger_fire(key)
                     thread coop_trigger_gated(level.coop_trig[i], key);
                     coop_dbg("COOPTRG held " + key + " (never fired from the partner; only this player's own entry fires it)");
                 }
-                else if (distance(coop_peer_state(), level.player.origin) > 1500)
+                else if (distance(coop_peer_state(), level.player.origin) > 1500 && !coop_enemysync_trigger(level.coop_trig[i], key))
                 {
                     // this PC's player is far from the partner (still at the spawn, say): the script of this world must not run ahead of him - the
                     // allies it spawns for the partner's area try to follow a player who is not on their friendly chain and the engine stops
@@ -2274,6 +2899,17 @@ coop_health_hud()
         // the host's checkpoint in every file it may load). The death is marked as induced: it is not reported back to the partner.
         if (coop_pop_peer_death())
         {
+            wait 0.45;
+            if (isdefined(level.coop_remote_fail) && gettime() - level.coop_remote_fail < 4000)
+            {
+                // the partner FAILED the mission: this player does not die, the screen greys out with the engine's own fail screen and the shared checkpoint is loaded
+                level.coop_remote_fail = undefined;
+                level.coop_induced = 1;
+                coop_log("COOPFAIL the partner failed the mission: the engine's fail screen here (no death)");
+                maps\_utility::missionFailedWrapper();
+                coop_death_started();
+                continue;
+            }
             level.coop_induced = 1;
             for (kt = 0; kt < 6; kt++)
             {
@@ -2343,6 +2979,46 @@ coop_key_alias(k)
     if (k == "building1_floor1" || k == "building1_floor2" || k == "building1_floor3" || k == "building2_floor1" || k == "building2_floor3")
         return "enemy_sniper";
     return k;
+}
+
+coop_vehicle_watch()
+{
+    // map-placed enemy machines that an objective counts (the tanks and the 88s of 88ridge / libya): both PCs have the same entities in the same order, so
+    // "group name + index" names one of them on both PCs. When one dies here the partner's copy is blown up too (test switch coop_keykill "on").
+    while (!isdefined(level.player))
+        wait 0.1;
+    level.coop_vkeys = [];
+    wait 3;
+    grp = [];
+    grp[0] = "enemytank";
+    grp[1] = "flak88s";
+    cnt = 0;
+    for (gi = 0; gi < grp.size; gi++)
+    {
+        ents = getentarray(grp[gi], "script_noteworthy");
+        for (i = 0; i < ents.size; i++)
+        {
+            key = grp[gi] + "_" + i;
+            level.coop_vkeys[key] = ents[i];
+            ents[i] thread coop_vehicle_death(key);
+            cnt++;
+        }
+    }
+    if (cnt > 0)
+        coop_log("COOPVEH tracking " + cnt + " map machines (enemytank, flak88s)");
+}
+
+coop_vehicle_death(key)
+{
+    self waittill("death");
+    if (isdefined(self.coop_remote))
+        return;
+    if (getcvar("coop_keykill") != "on")
+        return;
+    if (!isdefined(self))
+        return;
+    coop_send_kill_key(self.origin, key);
+    coop_log("COOPVEH destroyed here: " + key);
 }
 
 coop_npc_key(e)
@@ -2496,6 +3172,17 @@ coop_kill_recv()
                 kon = 1;
             if (kon && kk != "")
             {
+                if (isdefined(level.coop_vkeys) && isdefined(level.coop_vkeys[kk]))
+                {
+                    ve = level.coop_vkeys[kk];
+                    if (isdefined(ve) && !isdefined(ve.coop_remote))
+                    {
+                        ve.coop_remote = true;
+                        ve notify("death");
+                        coop_log("COOPVEH kill by key applied: " + kk);
+                    }
+                    continue;
+                }
                 // test: the kill names a single character: kill the living one with that key here (no distance, no position fallback)
                 hits = 0;
                 hit = undefined;
@@ -2637,6 +3324,25 @@ coop_flag_cleared(msg)
 	level.coop_flbad[msg] = 1;
 }
 "@
+    # a mission FAILED by its script (a protected ally died, an objective timer ran out, an ally was shot): the engine reloads only this PC. The partner is
+    # told with the same event as a death (he is killed by the script, both load the shared checkpoint).
+    $uf = [regex]::Match($util, '(?s)missionFailedWrapper\s*\(\s*\)\s*\{\s*if\s*\(\s*level\.missionfailed\s*\)\s*return;\s*level\.missionfailed\s*=\s*true;')
+    if ($uf.Success) {
+        $util = $util.Insert($uf.Index + $uf.Length, "`n`tcoop_mission_failed();")
+        $util += @"
+
+coop_mission_failed()
+{
+	if (!isdefined(level.coop_evc))
+		return;
+	if (isdefined(level.coop_induced))
+		return;
+	level.coop_failreq = 1;
+	coop_send_flag("coop_missionfailed");
+	coop_log("COOPFAIL the mission failed here: the partner is told (the same event as a death)");
+}
+"@
+    } else { Write-Warning "maps/_utility.gsc: missionFailedWrapper not found, a failed mission reloads only one PC" }
     $entries['_utility'] = $util
 } else { Write-Warning "maps/_utility.gsc: flag_set / flag_clear not found, the flag mirror has no sender" }
 Write-Host ("levels in the mod: " + ($entries.Keys -join ' '))
@@ -2686,9 +3392,60 @@ if ($Probe -eq 'net5' -or $Probe -eq 'net6' -or $Probe -eq 'net7') {
     # the own animation tree of the puppet (stock xanim clips, our own list: prone, crawl, rechamber, jump ... inside the engine's limit of 32 top-level nodes)
     New-Item -ItemType Directory -Force -Path (Join-Path $menuOut 'animtrees') | Out-Null
     Copy-Item (Join-Path $PSScriptRoot 'animtrees\coop_puppet.atr') (Join-Path $menuOut 'animtrees\coop_puppet.atr')
+    if ($Bank2) { Copy-Item (Join-Path $PSScriptRoot 'animtrees\coop_puppet2.atr') (Join-Path $menuOut 'animtrees\coop_puppet2.atr') }   # the second tree (bank 2 test, dev only)
     $script:ExtraDir = $menuOut
 }
 
+if ($Probe -eq 'net7' -and $Bank2) {
+    $bank2gsc = @'
+#using_animtree("coop_puppet2");
+
+setup(ent)
+{
+    ent useAnimTree(#animtree);
+}
+
+play(ent, id)
+{
+    // the pistol clips of the game's own soldiers (generic_human): the pt_ clips belong to the player-body skeleton and stand tilted on the puppet
+    if (id == 1)
+        ent setflaggedanimknobrestart("coop_p2", %pistol_crouchaim_idle, 1, 0.2, 1);
+    else if (id == 3)
+        ent setflaggedanimknobrestart("coop_p2", %pistol_crouch_reload, 1, 0.1, 1);
+    else if (id == 4)
+        ent setflaggedanimknobrestart("coop_p2", %boat_pistol_stand_idle, 1, 0.2, 1);
+    else if (id == 5)
+        ent setflaggedanimknobrestart("coop_p2", %pistol_stand_reload, 1, 0.1, 1);
+    else if (id == 6)
+        ent setflaggedanimknobrestart("coop_p2", %pistol_crouchrun_loop_forward_1, 1, 0.2, 1);
+    else if (id == 7)
+        ent setflaggedanimknobrestart("coop_p2", %pistol_crouchshoot_straight, 1, 0.05, 1);
+    else if (id == 8)
+        ent setflaggedanimknobrestart("coop_p2", %pistol_standshoot_straight, 1, 0.05, 1);
+    // a mounted machine gun (the gunner clips of the game's own AI): stand and prone, aim and fire
+    else if (id == 9)
+        ent setflaggedanimknobrestart("coop_p2", %standmg42gunner_aim_forward_breathingidle, 1, 0.2, 1);
+    else if (id == 10)
+        ent setflaggedanimknobrestart("coop_p2", %standmg42gunner_fire_forward_level, 1, 0.05, 1);
+    else if (id == 11)
+        ent setflaggedanimknobrestart("coop_p2", %pronemg42gunner_aim_forward_level, 1, 0.2, 1);
+    else if (id == 12)
+        ent setflaggedanimknobrestart("coop_p2", %pronemg42gunner_fire_forward_level, 1, 0.05, 1);
+}
+
+length(id)
+{
+    if (id == 3)
+        return int(getanimlength(%pistol_crouch_reload) * 1000);
+    if (id == 5)
+        return int(getanimlength(%pistol_stand_reload) * 1000);
+    if (id == 6)
+        return int(getanimlength(%pistol_crouchrun_loop_forward_1) * 1000);
+    return 600000;
+}
+'@
+    $entries['coop_anims2'] = $bank2gsc
+}
 Write-Iwd $iwdPath $entries
 
 $mainIwd = Join-Path $TestDir "main\zz_coop$Suffix.iwd"

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """compare_logs.py - read the coop5.log of the HOST and of the GUEST and say what each PC sent and what became of it on the other one.
 
-    python tools\\compare_logs.py <host coop5.log> <guest coop5.log> [--since HH:MM:SS] [--until HH:MM:SS]
+    python tools\\compare_logs.py <host coop5.log> <guest coop5.log> [--since HH:MM:SS] [--until HH:MM:SS] [--all]
+
+By default only the LAST game start of each file is read (the logs carry no dates, one file can hold several days); --all reads everything.
 
 Why: every "the flag did not arrive" report so far was one of a few things (held by the distance rule, own-entry only, already set, unknown here,
 a level change, F7). This tool classifies every flag / trigger key / kill event / checkpoint in both directions from the lines the bridge and the mod
@@ -23,8 +25,15 @@ LINE = re.compile(r'^\[(?:\d+)\]\s+(\d\d:\d\d:\d\d\.\d+)\s+(.*)$')
 
 
 def load(path, since, until):
+    """The logs carry no dates and one file can hold several game starts: only the LAST start ("=== cod2net5 ... ===") is read, unless --all is given."""
     ev = []
-    for raw in open(path, encoding='latin1', errors='replace'):
+    lines = open(path, encoding='latin1', errors='replace').read().split('\n')
+    start = 0
+    if '--all' not in sys.argv:
+        for i, ln in enumerate(lines):
+            if '=== cod2net5' in ln:
+                start = i
+    for raw in lines[start:]:
         m = LINE.match(raw.rstrip('\n'))
         if not m:
             continue

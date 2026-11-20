@@ -66,7 +66,7 @@ if (-not (Test-Path $proxyDll)) { throw "proxy d3d9.dll missing" }
 # 3. embed + compile
 $blobs = Join-Path $root 'launcher\blobs.h'
 # NO game content is embedded: the mod archive is built on the player's PC from the player's own game files by the scripts below
-python -I (Join-Path $PSScriptRoot 'embed_blob.py') $blobs "g_dll=$dll" "g_d3d9=$proxyDll" "g_ps_make=$(Join-Path $PSScriptRoot 'make_mod.ps1')" "g_ps_menu=$(Join-Path $PSScriptRoot 'patch_menu.ps1')" "g_atr=$(Join-Path $PSScriptRoot 'animtrees\coop_puppet.atr')" "g_coopmenu=$(Join-Path $root 'launcher\menu\coop.menu')"
+python -I (Join-Path $PSScriptRoot 'embed_blob.py') $blobs "g_dll=$dll" "g_d3d9=$proxyDll" "g_ps_make=$(Join-Path $PSScriptRoot 'make_mod.ps1')" "g_ps_menu=$(Join-Path $PSScriptRoot 'patch_menu.ps1')" "g_atr=$(Join-Path $PSScriptRoot 'animtrees\coop_puppet.atr')" "g_atr2=$(Join-Path $PSScriptRoot 'animtrees\coop_puppet2.atr')" "g_coopmenu=$(Join-Path $root 'launcher\menu\coop.menu')"
 if ($LASTEXITCODE -ne 0) { throw "embedding failed" }
 
 $vcvars = @(

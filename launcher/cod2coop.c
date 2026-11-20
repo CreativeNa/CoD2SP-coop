@@ -37,7 +37,7 @@
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "iphlpapi.lib")
 
-#define VERSION "0.7.7"
+#define VERSION "0.7.8"
 #define GAME_EXE "CoD2SP_s.exe"
 #define GAME_SHA256 "AB17A89CC3722AE80EDC1F4483CACBCAE08B0373B9128FE4EC053EBC79062281"            /* the Steam build */
 #define GAME_SHA256_RETAIL "64E7ADCA30F5C25A858BB537932C7041D4588A0554BBB917B8E25AC43A0E5A48"     /* the retail v1.3 exe (25980416 bytes): the guest PC runs the co-op on it */
@@ -387,7 +387,8 @@ static int build_mod_iwd(const char* game, const char* dest) {
         if (!make_dirs(root)) { printf("  cannot create a work folder (temp folder error %lu, game folder error %lu)\n", e1, GetLastError()); return 0; }
     }
     int ok = put_payload(root, "tools\\make_mod.ps1", g_ps_make, g_ps_make_len) && put_payload(root, "tools\\patch_menu.ps1", g_ps_menu, g_ps_menu_len)
-          && put_payload(root, "tools\\animtrees\\coop_puppet.atr", g_atr, g_atr_len) && put_payload(root, "launcher\\menu\\coop.menu", g_coopmenu, g_coopmenu_len);
+          && put_payload(root, "tools\\animtrees\\coop_puppet.atr", g_atr, g_atr_len) && put_payload(root, "tools\\animtrees\\coop_puppet2.atr", g_atr2, g_atr2_len)
+          && put_payload(root, "launcher\\menu\\coop.menu", g_coopmenu, g_coopmenu_len);
     char scratch[MAX_PATH], scratchMain[MAX_PATH], script[MAX_PATH], logp[MAX_PATH], g[MAX_PATH];
     join(scratch, sizeof scratch, root, "out"); join(scratchMain, sizeof scratchMain, scratch, "main"); make_dirs(scratchMain);
     join(script, sizeof script, root, "tools\\make_mod.ps1"); join(logp, sizeof logp, root, "build.log");
