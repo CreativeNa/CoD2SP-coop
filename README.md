@@ -58,6 +58,7 @@ Use the issue form of this repository.
 | [TWO_PC_TEST.md](docs/TWO_PC_TEST.md) | network, ports, test order, what to send back |
 | [TWO_PC_CHECKLIST.md](docs/TWO_PC_CHECKLIST.md) | step-by-step checklist for a test session |
 | [ANTIVIRUS.md](docs/ANTIVIRUS.md) | false positives, exclusions, hashes |
+| [SECURITY.md](docs/SECURITY.md) | who to play with, ports, firewall, reporting a problem |
 | [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | common errors |
 | [BUGS.md](docs/BUGS.md) | known issues |
 | [releases/0.7.8.md](docs/releases/0.7.8.md) | notes for the current build |
@@ -134,6 +135,7 @@ trucks, planes and boats are not.
 | [TWO_PC_TEST.md](docs/TWO_PC_TEST.md) | сеть, порты, порядок проверок, что прислать |
 | [TWO_PC_CHECKLIST.md](docs/TWO_PC_CHECKLIST.md) | чек-лист на вечер теста |
 | [ANTIVIRUS.md](docs/ANTIVIRUS.md) | ложные срабатывания, исключения, хеши |
+| [SECURITY.md](docs/SECURITY.md) | с кем играть, порты, брандмауэр, как сообщить о проблеме |
 | [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | типичные ошибки |
 | [BUGS.md](docs/BUGS.md) | известные проблемы |
 | [releases/0.7.8.md](docs/releases/0.7.8.md) | заметки к текущей сборке |

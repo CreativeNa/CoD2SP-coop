@@ -747,7 +747,7 @@ static void ask_peer(Opt* o, const char* who) {
         join(pf, sizeof pf, o->game, "coop_peer.txt");
         FILE* f = fopen(pf, "r"); if (f) { if (fgets(line, sizeof line, f)) sscanf(line, "%63s", def); fclose(f); }
         char prompt[160];
-        _snprintf(prompt, sizeof prompt, "%s %s (127.0.0.1 = test against yourself)", who, o->radmin ? "Radmin VPN address, 26.x.x.x" : "IP address");
+        _snprintf(prompt, sizeof prompt, "%s %s", who, o->radmin ? "Radmin VPN address, 26.x.x.x" : "IP address");
         prompt[sizeof prompt - 1] = 0;
         ask(prompt, def, o->peer, sizeof o->peer);
     }

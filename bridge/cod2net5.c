@@ -231,7 +231,7 @@ static void WallStr(char* out, size_t cap) {
 static SOCKET g_logSock = INVALID_SOCKET;
 static struct sockaddr_in g_logAddr;
 
-/* Addresses in the log are masked ("26.56.245.0" -> "26.56.x.x"; 127.x and 0.x stay): a log may be posted or sent around. A file coop_unmask_ips.txt
+/* Addresses in the log are masked ("26.1.2.3" -> "26.1.x.x"; 127.x and 0.x stay): a log may be posted or sent around. A file coop_unmask_ips.txt
    in the game folder switches the masking off (for the developer). */
 static void MaskIps(char* m) {
     char out[400]; size_t o = 0;
