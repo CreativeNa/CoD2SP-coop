@@ -1,0 +1,39 @@
+# Game files and anything derived from them must never be committed
+game-test/
+backup/
+scripts/
+saves/
+extracted/
+_re/
+*.iwd
+*.svg
+*.dmp
+
+# Build output, logs, runtime config
+*.dll
+*.exe
+*.obj
+*.exp
+*.lib
+*.pdb
+*.ilk
+*.log
+launcher/blobs.h
+dist/
+coop_*.txt
+coop_prefs.cfg
+
+# Local screenshots and scratch
+*.png
+*.webp
+!docs/img/*.png
+!docs/img/*.webp
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# editor/agent backups
+*.bak_*
+*.bak
+*.zip
