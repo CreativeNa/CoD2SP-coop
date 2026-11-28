@@ -1233,6 +1233,7 @@ coop_chan_publish()
     r = coop_ping(7777);
     thread coop_enemy_watch();
     thread coop_world_recv();
+    thread coop_friendly_fire_watch();
     thread coop_probe_scan();
     thread coop_probe_slots();
     thread coop_world_dump();
@@ -3263,10 +3264,23 @@ coop_world_pos_on()
     return 1;
 }
 
+coop_world_hybrid_on()
+{
+    // Hybrid body sync (the default): the guest's AI keeps thinking, but its goal is the host's position (setgoalpos), so the
+    // body walks to the same place and the animations/decisions stay local. "coop_world_hybrid off" brings back the frozen
+    // mode (host-authoritative bodies, coop_world_freeze).
+    if (getcvar("coop_world_hybrid") == "off")
+        return 0;
+    return 1;
+}
+
 coop_world_fire_on()
 {
     // Enemy fire, host side: the guest's copies of the enemies are frozen and never shoot, so the host decides which of its
     // enemies has the guest's player in sight and reports the damage (PH). OPT-IN: "coop_world_fire on" on the host.
+    // Hybrid mode: the guest's enemies think and shoot on their own, so this channel would double the damage: off.
+    if (coop_world_hybrid_on())
+        return 0;
     if (getcvar("coop_world_fire") != "on")
         return 0;
     return 1;
@@ -3334,6 +3348,52 @@ coop_player_hit_apply(w, dmg)
     level.player dodamage(dmg, org);
     coop_dbg("COOPHIT applied: " + w + " dmg=" + dmg + " health=" + level.player.health);
 }
+coop_friendly_fire_watch()
+{
+    // Friendly fire is a shared failure: an ally hit by the local player fails the mission on BOTH PCs. The stock
+    // maps\_utility::missionFailedWrapper() is already patched to tell the partner (coop_mission_failed -> "coop_missionfailed"),
+    // and the partner then reloads the same shared checkpoint. "coop_friendlyfire off" disables the rule.
+    if (getcvar("coop_friendlyfire") == "off")
+        return;
+    while (!isdefined(level.player))
+        wait 0.1;
+    for (;;)
+    {
+        wait 0.5;
+        allies = getaiarray("allies");
+        for (i = 0; i < allies.size; i++)
+        {
+            e = allies[i];
+            if (!isdefined(e) || isdefined(e.coop_ff_watched))
+                continue;
+            e.coop_ff_watched = 1;
+            e thread coop_friendly_fire_one();
+        }
+    }
+}
+
+coop_friendly_fire_one()
+{
+    // wait for the first damage that came from the local player; the engine gives the attacker with the notification
+    for (;;)
+    {
+        self waittill("damage", amount, attacker);
+        if (isdefined(self.coop_ff_done))
+            return;
+        if (!isdefined(attacker) || attacker != level.player)
+            continue;
+        if (isdefined(level.missionfailed) && level.missionfailed)
+            return;
+        if (isdefined(level.coop_ff_lock))
+            return;                       /* one failure per life: two allies hit in the same frame are one event */
+        level.coop_ff_lock = 1;
+        self.coop_ff_done = 1;
+        coop_log("COOPFF an ally was hit by the local player: the mission fails on both PCs (shared checkpoint)");
+        maps\_utility::missionFailedWrapper();
+        return;
+    }
+}
+
 coop_world_pos_apply(w, org, yaw)
 {
     // The host says where this actor stands. Correct the local copy only when it has drifted far enough to be noticed, and use the engine's own
@@ -3372,6 +3432,34 @@ coop_world_pos_apply(w, org, yaw)
     }
     if (d < 24 && dy < 15 && dy > -15)
         return;
+    if (coop_world_hybrid_on() && isai(e))
+    {
+        // Hybrid: do not move the body directly. The local AI is told where to walk (setgoalpos) and at most every 400 ms, so it
+        // paths and animates on its own; the target stays the local player, so it fights instead of standing. A hard teleport is
+        // kept only for the case where the goal cannot close the gap (stuck in geometry/vehicle).
+        now = gettime();
+        if (d > 400)
+        {
+            e teleport(org, (0, yaw, 0));
+            coop_dbg("COOPW hybrid teleport: " + w + " d=" + int(d));
+            return;
+        }
+        if (!isdefined(e.coop_gt) || now - int(e.coop_gt) >= 400)
+        {
+            e setgoalpos(org);
+            if (!isdefined(e.coop_tgt))
+            {
+                // setgoalpos only: the engine accepts settargetentity for turrets ("entity type ... is not a turret" otherwise)
+                // and that runtime error stops the whole receive thread, so every later position/death/damage packet is lost.
+                // The actor already picks the local player as its target on its own; the hybrid mode only steers walking.
+                e.goalradius = 48;
+                e.coop_tgt = 1;
+            }
+            e.coop_gt = now;
+            coop_dbg("COOPW hybrid goal: " + w + " d=" + int(d) + " dy=" + dy);
+        }
+        return;
+    }
     if (d > 300)
         e teleport(org, (0, yaw, 0));
     else
@@ -3854,7 +3942,7 @@ coop_enemy_watch()
                 // Stage 5, opt-in ("coop_world_freeze on" on the guest): this actor's body is driven by the host, so switch its
                 // own think off. The gate is data only: the bridge keeps entity+0x138 out of reach, and FUN_004DA090 then never
                 // calls the actor's think. Without it a received position is undone by the local AI within seconds.
-                if (won && w != "" && coop_is_guest() && coop_world_pos_on() && getcvar("coop_world_freeze") == "on")
+                if (won && w != "" && coop_is_guest() && coop_world_pos_on() && getcvar("coop_world_freeze") == "on" && !coop_world_hybrid_on())
                 {
                     coop_freeze(ai[i] getentitynumber());
                     ai[i].coop_frozen = 1;
@@ -3905,7 +3993,7 @@ coop_enemy_watch()
             e.coop_frozen = 0;
             coop_dbg("COOPW think released for death: " + wids[i]);
         }
-        if (won && coop_is_guest() && coop_world_pos_on() && getcvar("coop_world_freeze") == "on")
+        if (won && coop_is_guest() && coop_world_pos_on() && getcvar("coop_world_freeze") == "on" && !coop_world_hybrid_on())
         {
             for (i = 0; i < ents.size; i++)
             {
@@ -3989,7 +4077,7 @@ coop_enemy_watch()
         }
         // Stage 5, animation (independent of the position channel): the host ships the actor's animation words, the guest writes
         // them into its own (frozen) copy. Only actors this PC knows a world id for; the bridge skips unchanged words itself.
-        if (won && coop_world_anim_on() && !coop_is_guest())
+        if (won && coop_world_anim_on() && !coop_is_guest() && !coop_world_hybrid_on())   /* in hybrid the body animates itself: the host's words would fight it */
         {
             for (i = 0; i < ents.size && i < 40; i++)
             {
